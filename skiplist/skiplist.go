@@ -5,8 +5,8 @@ import (
 )
 
 type node struct{
-	key string
-	value []byte
+	Key string
+	Value []byte
 	forward []*node
 
 }
@@ -16,6 +16,7 @@ type Skiplist struct {
 	maxLevel int
 	currTopLevel int
 	length int
+	comparator func(a, b string) int
 }
 
 func generateRandomLevel(maxLevel int) int {
@@ -42,7 +43,7 @@ func (s *Skiplist) Insert(key string, value []byte){
 	update := make([]*node, s.maxLevel)
 
 	for i := s.currTopLevel - 1; i >= 0; i-- {
-		for current.forward[i] != nil && current.forward[i].key < key {
+		for current.forward[i] != nil && s.comparator(current.forward[i].Key, key) < 0 {
 			current = current.forward[i]
 		}
 		update[i] = current
@@ -50,8 +51,8 @@ func (s *Skiplist) Insert(key string, value []byte){
 
 	next := update[0].forward[0]
 
-	if next != nil && next.key == key {
-		next.value = value
+	if next != nil && next.Key == key {
+		next.Value = value
 		return
 	}
 
@@ -65,8 +66,8 @@ func (s *Skiplist) Insert(key string, value []byte){
 	}
 
 	newNode := &node{
-		key: key,
-		value: value,
+		Key: key,
+		Value: value,
 		forward: make([]*node, randomLevel),
 	}
 
@@ -85,7 +86,7 @@ func (s *Skiplist) Search(key string) (*node,bool){
 	for level := s.currTopLevel - 1; level >= 0; level-- {
 
 		for current.forward[level] != nil &&
-			current.forward[level].key < key {
+			s.comparator(current.forward[level].Key, key) < 0 {
 
 			current = current.forward[level]
 		}
@@ -93,9 +94,12 @@ func (s *Skiplist) Search(key string) (*node,bool){
 
 	current = current.forward[0]
 
-	if current != nil && current.key == key {
+	if current != nil && current.Key == key {
 		return current, true
 	}
 
 	return nil, false
 }
+
+//tbd add generics for future use.
+

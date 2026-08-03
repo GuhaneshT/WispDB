@@ -12,7 +12,7 @@ import (
 type WALRecord struct {
 	Timestamp int64
 	Key       string
-	Value     string
+	Value     []byte
 }
 
 // payload design v1 : timestamp + key length + value length + key + value
@@ -108,7 +108,7 @@ func deserializePayload(data []byte) (WALRecord, error) {
 	return WALRecord{
 		Timestamp: timestamp,
 		Key:       string(keyBytes),
-		Value:     string(valueBytes),
+		Value:     valueBytes,
 	}, nil
 }
 
