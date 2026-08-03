@@ -1,6 +1,7 @@
 package wisp
 
 import (
+	"fmt"
 	"time"
 	"wisp/memtable"
 	"wisp/wal"
@@ -58,11 +59,16 @@ func (w *Wisp) Insert(
 	}
 
 	if w.mutableMemTable.IsFull() {
+		//freeze the current mutable memtable and create a new one
+		w.mutableMemTable.Freeze()
 		w.immutableMemTable = w.mutableMemTable
 		w.mutableMemTable, _ = memtable.CreateMemTable()
 	}
 
-	w.mutableMemTable.Put(key, value)
+	status := w.mutableMemTable.Put(key, value)
+	if !status{
+		return fmt.Errorf("failed to put record in mutable memtable")
+	}
 
 	return nil
 }

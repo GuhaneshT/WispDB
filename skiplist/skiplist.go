@@ -11,6 +11,47 @@ type node struct{
 
 }
 
+type Iterator struct {
+	current *node
+}
+
+func (s *Skiplist) Iterator() *Iterator {
+	return &Iterator{
+		current: s.head.forward[0],
+	}
+}
+
+func (it *Iterator) Valid() bool {
+	return it.current != nil
+}
+
+func (it *Iterator) Next() {
+	if it.current != nil {
+		it.current = it.current.forward[0]
+	}
+}
+
+func (it *Iterator) Key() string {
+	if it.current == nil {
+		return ""
+	}
+	return it.current.Key
+}
+
+func (it *Iterator) Value() []byte {
+	if it.current == nil {
+		return nil
+	}
+	return it.current.Value
+}
+
+func (it *Iterator) Entry() (string, []byte) {
+	if it.current == nil {
+		return "", nil
+	}
+	return it.current.Key, it.current.Value
+}
+
 type Skiplist struct {
 	head *node
 	maxLevel int
