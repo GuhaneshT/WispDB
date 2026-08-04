@@ -1,17 +1,15 @@
-package wisp
+package main
 
 import (
 	"fmt"
-	"time"
 	"wisp/memtable"
 	"wisp/wal"
 )
 
 type Record struct {
-	ID        int
+	SeriesID  uint64
 	Timestamp int64
-	Key       string
-	Value     string
+	Value     []byte
 }
 
 type Wisp struct {
@@ -42,14 +40,15 @@ func CreateWisp() (*Wisp, error) {
 }
 
 func (w *Wisp) Insert(
-	key string,
+	seriesId uint64,
+	timestamp int64,
 	value []byte,
 ) error {
 
 	record := wal.WALRecord{
-		Timestamp: time.Now().UnixNano(),
-		Key: key,
-		Value: value,
+		Timestamp: timestamp,
+		SeriesID:  seriesId,
+		Value:     value,
 	}
 
 	err := w.wal.AppendRecord(record)
@@ -59,13 +58,13 @@ func (w *Wisp) Insert(
 	}
 
 	if w.mutableMemTable.IsFull() {
-		//freeze the current mutable memtable and create a new one
+
 		w.mutableMemTable.Freeze()
 		w.immutableMemTable = w.mutableMemTable
 		w.mutableMemTable, _ = memtable.CreateMemTable()
 	}
 
-	status := w.mutableMemTable.Put(key, value)
+	status := w.mutableMemTable.Put(seriesId, record.Timestamp, value)
 	if !status{
 		return fmt.Errorf("failed to put record in mutable memtable")
 	}

@@ -11,25 +11,15 @@ import (
 
 type WALRecord struct {
 	Timestamp int64
-	Key       string
+	SeriesID  uint64
 	Value     []byte
 }
 
-// payload design v1 : timestamp + key length + value length + key + value
+// payload design v1 : timestamp + value length + key + value
 func serializePayload(record WALRecord) ([]byte, error) {
 
 	buf := new(bytes.Buffer)
 	err := binary.Write(buf, binary.LittleEndian, record.Timestamp)
-	if err != nil {
-		return nil, err
-	}
-
-	err = binary.Write(
-		buf,
-		binary.LittleEndian,
-		uint32(len(record.Key)),
-	)
-
 	if err != nil {
 		return nil, err
 	}
@@ -44,7 +34,16 @@ func serializePayload(record WALRecord) ([]byte, error) {
 		return nil, err
 	}
 
-	buf.Write([]byte(record.Key))
+	err = binary.Write(
+		buf,
+		binary.LittleEndian,
+		record.SeriesID,
+	)
+
+	if err != nil {
+		return nil, err
+	}
+
 	buf.Write([]byte(record.Value))
 
 	return buf.Bytes(), nil
@@ -56,7 +55,7 @@ func deserializePayload(data []byte) (WALRecord, error) {
 	buf := bytes.NewReader(data)
 
 	var timestamp int64
-	var keyLen uint32
+	
 	var valueLen uint32
 
 	err := binary.Read(
@@ -69,15 +68,6 @@ func deserializePayload(data []byte) (WALRecord, error) {
 		return WALRecord{}, err
 	}
 
-	err = binary.Read(
-		buf,
-		binary.LittleEndian,
-		&keyLen,
-	)
-
-	if err != nil {
-		return WALRecord{}, err
-	}
 
 	err = binary.Read(
 		buf,
@@ -89,13 +79,14 @@ func deserializePayload(data []byte) (WALRecord, error) {
 		return WALRecord{}, err
 	}
 
-	keyBytes := make([]byte, keyLen)
+	seriesIdBytes := make([]byte, 4)
 
-	_, err = io.ReadFull(buf, keyBytes)
+	_, err = io.ReadFull(buf, seriesIdBytes) // read seriesID
 
 	if err != nil {
 		return WALRecord{}, err
 	}
+	seriesId := uint64(binary.LittleEndian.Uint32(seriesIdBytes))
 
 	valueBytes := make([]byte, valueLen)
 
@@ -107,7 +98,7 @@ func deserializePayload(data []byte) (WALRecord, error) {
 
 	return WALRecord{
 		Timestamp: timestamp,
-		Key:       string(keyBytes),
+		SeriesID:  seriesId,
 		Value:     valueBytes,
 	}, nil
 }
@@ -116,13 +107,12 @@ type WAL struct {
 	file *os.File
 }
 
-// Create WAL file
 
 func CreateWAL(path string) (*WAL, error) {
 
 	file, err := os.OpenFile(
 		path,
-		os.O_APPEND|os.O_CREATE|os.O_WRONLY,
+		os.O_APPEND|os.O_CREATE|os.O_RDWR,
 		0644,
 	)
 
@@ -180,6 +170,11 @@ func (w *WAL) AppendRecord(record WALRecord) error {
 func (w *WAL) Replay() ([]WALRecord, error) {
 
 	var records []WALRecord
+
+	_, err := w.file.Seek(0, io.SeekStart)
+	if err != nil {
+		return nil, err
+	}
 
 	for {
 

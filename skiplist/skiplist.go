@@ -5,10 +5,33 @@ import (
 )
 
 type node struct{
-	Key string
+	Key Key
 	Value []byte
 	forward []*node
 
+}
+
+func compare(a, b Key) int {
+    if a.SeriesID < b.SeriesID {
+        return -1
+    }
+    if a.SeriesID > b.SeriesID {
+        return 1
+    }
+
+    if a.Timestamp < b.Timestamp {
+        return -1
+    }
+    if a.Timestamp > b.Timestamp {
+        return 1
+    }
+
+    return 0
+}
+
+type Key struct{
+	SeriesID uint64
+	Timestamp int64
 }
 
 type Iterator struct {
@@ -31,11 +54,11 @@ func (it *Iterator) Next() {
 	}
 }
 
-func (it *Iterator) Key() string {
+func (it *Iterator) SeriesID() uint64 {
 	if it.current == nil {
-		return ""
+		return 0
 	}
-	return it.current.Key
+	return it.current.Key.SeriesID	
 }
 
 func (it *Iterator) Value() []byte {
@@ -45,9 +68,9 @@ func (it *Iterator) Value() []byte {
 	return it.current.Value
 }
 
-func (it *Iterator) Entry() (string, []byte) {
+func (it *Iterator) Entry() (Key, []byte) {
 	if it.current == nil {
-		return "", nil
+		return Key{}, nil
 	}
 	return it.current.Key, it.current.Value
 }
@@ -57,7 +80,7 @@ type Skiplist struct {
 	maxLevel int
 	currTopLevel int
 	length int
-	comparator func(a, b string) int
+	comparator func(a, b Key) int
 }
 
 func generateRandomLevel(maxLevel int) int {
@@ -76,10 +99,11 @@ func NewSkipList(maxLevel int) *Skiplist {
         },
         maxLevel:    maxLevel,
         currTopLevel: 1,
+		comparator: compare,
     }
 }
 
-func (s *Skiplist) Insert(key string, value []byte){
+func (s *Skiplist) Insert(key Key, value []byte){
 	current := s.head
 	update := make([]*node, s.maxLevel)
 
@@ -121,7 +145,7 @@ func (s *Skiplist) Insert(key string, value []byte){
 }
 
 
-func (s *Skiplist) Search(key string) (*node,bool){
+func (s *Skiplist) Search(key Key) (*node,bool){
 	current := s.head
 
 	for level := s.currTopLevel - 1; level >= 0; level-- {
