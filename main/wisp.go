@@ -27,6 +27,7 @@ type WispConfig struct {
 	SSTablePath          string
 	SSTableBlockSize     uint32
 	MemTableFlushThreshold uint64
+	SSTableList          *SSTableList
 }
 
 type Wisp struct {
@@ -34,8 +35,6 @@ type Wisp struct {
 	wal               *wal.WAL
 	mutableMemTable   *memtable.MemTable
 	immutableMemTable *memtable.MemTable
-	sstable           *sstable.SSTable
-	sstableReader     *sstable.Reader
 	sstableWriter     *sstable.Writer
 }
 
@@ -49,6 +48,7 @@ func DefaultWispConfig() WispConfig {
 		SSTablePath:           defaultSSTablePath,
 		SSTableBlockSize:      defaultSSTableBlockSize,
 		MemTableFlushThreshold: defaultMemTableThreshold,
+		SSTableList:          &SSTableList{},
 	}
 }
 
@@ -65,6 +65,9 @@ func CreateWispWithConfig(config WispConfig) (*Wisp, error) {
 	if config.MemTableFlushThreshold == 0 {
 		config.MemTableFlushThreshold = defaultMemTableThreshold
 	}
+	if config.SSTableList == nil {
+		config.SSTableList = &SSTableList{}
+	}
 
 	walInstance, err := wal.CreateWAL(config.WALPath)
 	if err != nil {
@@ -76,7 +79,7 @@ func CreateWispWithConfig(config WispConfig) (*Wisp, error) {
 		return nil, err
 	}
 	wisp := &Wisp{config: config, wal: walInstance, mutableMemTable: mutableMemTable}
-	if err := wisp.openSSTable(); err != nil {
+	if err := wisp.openSSTables(); err != nil {
 		_ = wisp.Close()
 		return nil, err
 	}
@@ -146,10 +149,16 @@ func (w *Wisp) Get(seriesID uint64, timestamp int64) ([]byte, bool, error) {
 			return value, true, nil
 		}
 	}
-	if w.sstableReader == nil {
-		return nil, false, nil
+	for _, table := range w.config.SSTableList.tables {
+		value, found, err := table.Reader.Get(seriesID, timestamp)
+		if err != nil {
+			return nil, false, err
+		}
+		if found {
+			return value, true, nil
+		}
 	}
-	return w.sstableReader.Get(seriesID, timestamp)
+	return nil, false, nil
 }
 
 // recover on startup, to be added after sstable is implemented
@@ -176,7 +185,12 @@ func (w *Wisp) Flush() error {
 	if w.immutableMemTable == nil {
 		return nil
 	}
-	writer, err := sstable.NewWriter(w.config.SSTablePath, w.config.SSTableBlockSize)
+	var nextGen uint64 = 1
+	if n := len(w.config.SSTableList.tables); n > 0 {
+		nextGen = w.config.SSTableList.tables[0].Gen + 1
+	}
+	path := w.config.SSTableList.NewPath(w.config.SSTablePath, nextGen)
+	writer, err := sstable.NewWriter(path, w.config.SSTableBlockSize)
 	if err != nil {
 		return err
 	}
@@ -196,46 +210,37 @@ func (w *Wisp) Flush() error {
 		w.sstableWriter = nil
 		return err
 	}
+	reader, err := sstable.OpenReader(path)
+	if err != nil {
+		w.sstableWriter = nil
+		return err
+	}
+	w.config.SSTableList.Add(&SSTableFile{Path: path, Gen: nextGen, Reader: reader})
 	if err := w.wal.Reset(); err != nil {
 		w.sstableWriter = nil
 		return err
 	}
 	w.sstableWriter = nil
 	w.immutableMemTable = nil
-	return w.openSSTable()
+	return nil
 }
 
-func (w *Wisp) openSSTable() error {
-	if _, err := os.Stat(w.config.SSTablePath); err != nil {
+func (w *Wisp) openSSTables() error {
+	if err := w.config.SSTableList.Load(w.config.SSTablePath); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			if w.sstableReader != nil {
-				_ = w.sstableReader.Close()
-			}
-			w.sstable = nil
-			w.sstableReader = nil
 			return nil
 		}
 		return err
 	}
-	if w.sstableReader != nil {
-		w.sstableReader.Close()
-	}
-	reader, err := sstable.OpenReader(w.config.SSTablePath)
-	if err != nil {
-		return err
-	}
-	w.sstable = &sstable.SSTable{Path: w.config.SSTablePath}
-	w.sstableReader = reader
 	return nil
 }
 
 func (w *Wisp) Close() error {
 	var closeErr error
-	if w.sstableReader != nil {
-		if err := w.sstableReader.Close(); err != nil && closeErr == nil {
+	if w.config.SSTableList != nil {
+		if err := w.config.SSTableList.Close(); err != nil && closeErr == nil {
 			closeErr = err
 		}
-		w.sstableReader = nil
 	}
 	if w.sstableWriter != nil {
 		if err := w.sstableWriter.Close(); err != nil && closeErr == nil {
