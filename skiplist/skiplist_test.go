@@ -31,6 +31,25 @@ func TestInsertSearchAndOverwrite(t *testing.T) {
 	}
 }
 
+func TestDeleteMarksNodeAsDeleted(t *testing.T) {
+	rand.Seed(3)
+
+	s := NewSkipList(8)
+	s.Insert(Key{SeriesID: 1, Timestamp: 10}, []byte("alpha"))
+	s.Delete(Key{SeriesID: 1, Timestamp: 10})
+
+	node, found := s.Search(Key{SeriesID: 1, Timestamp: 10})
+	if !found {
+		t.Fatalf("Search() did not find deleted key")
+	}
+	if !node.Deleted {
+		t.Fatalf("deleted node was not marked deleted")
+	}
+	if value, found, deleted := s.Lookup(Key{SeriesID: 1, Timestamp: 10}); !found || !deleted || value != nil {
+		t.Fatalf("Lookup() = found=%v deleted=%v value=%q, want true true nil", found, deleted, value)
+	}
+}
+
 func TestIteratorOrdersBySeriesAndTimestamp(t *testing.T) {
 	rand.Seed(2)
 

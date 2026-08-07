@@ -3,6 +3,7 @@ package sstable
 type Entry struct {
 	SeriesID  uint64
 	Timestamp int64
+	Deleted   bool
 	Value     []byte
 }
 

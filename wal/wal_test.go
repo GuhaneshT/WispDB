@@ -21,7 +21,7 @@ func TestWALAppendReplayAndReset(t *testing.T) {
 
 	want := []WALRecord{
 		{SeriesID: 1, Timestamp: 10, Value: []byte("alpha")},
-		{SeriesID: 2, Timestamp: 20, Value: []byte("beta")},
+		{SeriesID: 2, Timestamp: 20, Deleted: true},
 	}
 
 	for _, record := range want {
@@ -39,7 +39,7 @@ func TestWALAppendReplayAndReset(t *testing.T) {
 		t.Fatalf("Replay() len = %d, want %d", len(got), len(want))
 	}
 	for i := range want {
-		if got[i].SeriesID != want[i].SeriesID || got[i].Timestamp != want[i].Timestamp || !bytes.Equal(got[i].Value, want[i].Value) {
+		if got[i].SeriesID != want[i].SeriesID || got[i].Timestamp != want[i].Timestamp || got[i].Deleted != want[i].Deleted || !bytes.Equal(got[i].Value, want[i].Value) {
 			t.Fatalf("Replay()[%d] = %+v, want %+v", i, got[i], want[i])
 		}
 	}

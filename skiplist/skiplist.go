@@ -7,6 +7,7 @@ import (
 type node struct {
 	Key     Key
 	Value   []byte
+	Deleted bool
 	forward []*node
 }
 
@@ -51,6 +52,8 @@ func (it *Iterator) SeriesID() uint64 { if it.current == nil { return 0 }; retur
 
 func (it *Iterator) Value() []byte { if it.current == nil { return nil }; return it.current.Value }
 
+func (it *Iterator) Deleted() bool { if it.current == nil { return false }; return it.current.Deleted }
+
 func (it *Iterator) Entry() (Key, []byte) { if it.current == nil { return Key{}, nil }; return it.current.Key, it.current.Value }
 
 type Skiplist struct {
@@ -73,7 +76,7 @@ func NewSkipList(maxLevel int) *Skiplist {
 	return &Skiplist{head: &node{forward: make([]*node, maxLevel)}, maxLevel: maxLevel, currTopLevel: 1, comparator: compare}
 }
 
-func (s *Skiplist) Insert(key Key, value []byte) {
+func (s *Skiplist) insert(key Key, value []byte, deleted bool) {
 	current := s.head
 	update := make([]*node, s.maxLevel)
 	for i := s.currTopLevel - 1; i >= 0; i-- {
@@ -85,6 +88,7 @@ func (s *Skiplist) Insert(key Key, value []byte) {
 	next := update[0].forward[0]
 	if next != nil && next.Key == key {
 		next.Value = value
+		next.Deleted = deleted
 		return
 	}
 	randomLevel := generateRandomLevel(s.maxLevel)
@@ -94,12 +98,20 @@ func (s *Skiplist) Insert(key Key, value []byte) {
 		}
 		s.currTopLevel = randomLevel
 	}
-	newNode := &node{Key: key, Value: value, forward: make([]*node, randomLevel)}
+	newNode := &node{Key: key, Value: value, Deleted: deleted, forward: make([]*node, randomLevel)}
 	for i := 0; i < randomLevel; i++ {
 		newNode.forward[i] = update[i].forward[i]
 		update[i].forward[i] = newNode
 	}
 	s.length++
+}
+
+func (s *Skiplist) Insert(key Key, value []byte) {
+	s.insert(key, value, false)
+}
+
+func (s *Skiplist) Delete(key Key) {
+	s.insert(key, nil, true)
 }
 
 func (s *Skiplist) Search(key Key) (*node, bool) {
@@ -114,6 +126,14 @@ func (s *Skiplist) Search(key Key) (*node, bool) {
 		return current, true
 	}
 	return nil, false
+}
+
+func (s *Skiplist) Lookup(key Key) ([]byte, bool, bool) {
+	node, found := s.Search(key)
+	if !found {
+		return nil, false, false
+	}
+	return node.Value, true, node.Deleted
 }
 
 //tbd add generics for future use.

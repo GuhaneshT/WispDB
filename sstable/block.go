@@ -16,13 +16,13 @@ func (b *Block) Add(entry Entry) {
 }
 
 func entryEncodedSize(entry Entry) uint32 {
-	return uint32(4 + 8 + 8 + 4 + len(entry.Value))
+	return uint32(4 + 8 + 8 + 1 + 4 + len(entry.Value))
 }
 
 func (b *Block) Encode() ([]byte, error) {
 	var buf bytes.Buffer
 	for _, entry := range b.Entries {
-		entryLength := uint32(8 + 8 + 4 + len(entry.Value))
+		entryLength := uint32(8 + 8 + 1 + 4 + len(entry.Value))
 		if err := binary.Write(&buf, binary.LittleEndian, entryLength); err != nil {
 			return nil, err
 		}
@@ -30,6 +30,13 @@ func (b *Block) Encode() ([]byte, error) {
 			return nil, err
 		}
 		if err := binary.Write(&buf, binary.LittleEndian, entry.Timestamp); err != nil {
+			return nil, err
+		}
+		var deleted uint8
+		if entry.Deleted {
+			deleted = 1
+		}
+		if err := binary.Write(&buf, binary.LittleEndian, deleted); err != nil {
 			return nil, err
 		}
 		valueLength := uint32(len(entry.Value))

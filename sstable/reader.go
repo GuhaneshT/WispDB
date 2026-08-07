@@ -87,6 +87,9 @@ func (r *Reader) Get(seriesID uint64, timestamp int64) ([]byte, bool, error) {
 	}
 	for _, entry := range entries {
 		if entry.SeriesID == seriesID && entry.Timestamp == timestamp {
+			if entry.Deleted {
+				return nil, false, nil
+			}
 			return entry.Value, true, nil
 		}
 	}
@@ -130,19 +133,20 @@ func (r *Reader) readBlock(indexEntry IndexEntry) ([]Entry, error) {
 		}
 		entryLength := int(binary.LittleEndian.Uint32(data[pos : pos+4]))
 		pos += 4
-		if pos+entryLength > len(data) || entryLength < 20 {
+		if pos+entryLength > len(data) || entryLength < 21 {
 			return nil, fmt.Errorf("corrupt block entry")
 		}
 		seriesID := binary.LittleEndian.Uint64(data[pos : pos+8])
 		timestamp := int64(binary.LittleEndian.Uint64(data[pos+8 : pos+16]))
-		valueLength := int(binary.LittleEndian.Uint32(data[pos+16 : pos+20]))
-		valueStart := pos + 20
+		deleted := data[pos+16] != 0
+		valueLength := int(binary.LittleEndian.Uint32(data[pos+17 : pos+21]))
+		valueStart := pos + 21
 		valueEnd := valueStart + valueLength
 		if valueEnd > pos+entryLength {
 			return nil, fmt.Errorf("corrupt block value")
 		}
 		value := append([]byte(nil), data[valueStart:valueEnd]...)
-		entries = append(entries, Entry{SeriesID: seriesID, Timestamp: timestamp, Value: value})
+		entries = append(entries, Entry{SeriesID: seriesID, Timestamp: timestamp, Deleted: deleted, Value: value})
 		pos += entryLength
 	}
 	return entries, nil

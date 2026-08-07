@@ -12,14 +12,22 @@ import (
 type WALRecord struct {
 	Timestamp int64
 	SeriesID  uint64
+	Deleted   bool
 	Value     []byte
 }
 
-// payload design v1 : timestamp + value length + key + value
+// payload design v2: timestamp + deleted flag + value length + key + value
 func serializePayload(record WALRecord) ([]byte, error) {
 	buf := new(bytes.Buffer)
 	err := binary.Write(buf, binary.LittleEndian, record.Timestamp)
 	if err != nil {
+		return nil, err
+	}
+	var deleted uint8
+	if record.Deleted {
+		deleted = 1
+	}
+	if err := binary.Write(buf, binary.LittleEndian, deleted); err != nil {
 		return nil, err
 	}
 	err = binary.Write(buf, binary.LittleEndian, uint32(len(record.Value)))
@@ -38,8 +46,13 @@ func serializePayload(record WALRecord) ([]byte, error) {
 func deserializePayload(data []byte) (WALRecord, error) {
 	buf := bytes.NewReader(data)
 	var timestamp int64
+	var deleted uint8
 	var valueLen uint32
 	err := binary.Read(buf, binary.LittleEndian, &timestamp)
+	if err != nil {
+		return WALRecord{}, err
+	}
+	err = binary.Read(buf, binary.LittleEndian, &deleted)
 	if err != nil {
 		return WALRecord{}, err
 	}
@@ -58,7 +71,7 @@ func deserializePayload(data []byte) (WALRecord, error) {
 	if err != nil {
 		return WALRecord{}, err
 	}
-	return WALRecord{Timestamp: timestamp, SeriesID: seriesId, Value: valueBytes}, nil
+	return WALRecord{Timestamp: timestamp, SeriesID: seriesId, Deleted: deleted != 0, Value: valueBytes}, nil
 }
 
 type WAL struct {

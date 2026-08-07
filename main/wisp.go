@@ -72,6 +72,7 @@ func CreateWispWithConfig(config WispConfig) (*Wisp, error) {
 	}
 	mutableMemTable, err := memtable.CreateMemTableWithThreshold(config.MemTableFlushThreshold)
 	if err != nil {
+		_ = walInstance.Close()
 		return nil, err
 	}
 	wisp := &Wisp{config: config, wal: walInstance, mutableMemTable: mutableMemTable}
@@ -87,6 +88,34 @@ func CreateWispWithConfig(config WispConfig) (*Wisp, error) {
 }
 
 func (w *Wisp) Insert(seriesID uint64, timestamp int64, value []byte) error {
+	if err := w.prepareMutableMemTable(); err != nil {
+		return err
+	}
+	record := wal.WALRecord{Timestamp: timestamp, SeriesID: seriesID, Value: value}
+	if err := w.wal.AppendRecord(record); err != nil {
+		return err
+	}
+	if !w.mutableMemTable.Put(seriesID, record.Timestamp, value) {
+		return fmt.Errorf("failed to put record in mutable memtable")
+	}
+	return nil
+}
+
+func (w *Wisp) Delete(seriesID uint64, timestamp int64) error {
+	if err := w.prepareMutableMemTable(); err != nil {
+		return err
+	}
+	record := wal.WALRecord{Timestamp: timestamp, SeriesID: seriesID, Deleted: true}
+	if err := w.wal.AppendRecord(record); err != nil {
+		return err
+	}
+	if !w.mutableMemTable.Delete(seriesID, timestamp) {
+		return fmt.Errorf("failed to delete record in mutable memtable")
+	}
+	return nil
+}
+
+func (w *Wisp) prepareMutableMemTable() error {
 	if w.mutableMemTable.IsFull() {
 		w.mutableMemTable.Freeze()
 		w.immutableMemTable = w.mutableMemTable
@@ -99,22 +128,21 @@ func (w *Wisp) Insert(seriesID uint64, timestamp int64, value []byte) error {
 		}
 		w.mutableMemTable = mutableMemTable
 	}
-	record := wal.WALRecord{Timestamp: timestamp, SeriesID: seriesID, Value: value}
-	if err := w.wal.AppendRecord(record); err != nil {
-		return err
-	}
-	if !w.mutableMemTable.Put(seriesID, record.Timestamp, value) {
-		return fmt.Errorf("failed to put record in mutable memtable")
-	}
 	return nil
 }
 
 func (w *Wisp) Get(seriesID uint64, timestamp int64) ([]byte, bool, error) {
-	if value, found := w.mutableMemTable.Get(seriesID, timestamp); found {
+	if value, found, deleted := w.mutableMemTable.Lookup(seriesID, timestamp); found {
+		if deleted {
+			return nil, false, nil
+		}
 		return value, true, nil
 	}
 	if w.immutableMemTable != nil {
-		if value, found := w.immutableMemTable.Get(seriesID, timestamp); found {
+		if value, found, deleted := w.immutableMemTable.Lookup(seriesID, timestamp); found {
+			if deleted {
+				return nil, false, nil
+			}
 			return value, true, nil
 		}
 	}
@@ -131,7 +159,13 @@ func (w *Wisp) Recover() error {
 		return err
 	}
 	for _, record := range records {
-		if ok := w.mutableMemTable.Put(record.SeriesID, record.Timestamp, record.Value); !ok {
+		var ok bool
+		if record.Deleted {
+			ok = w.mutableMemTable.Delete(record.SeriesID, record.Timestamp)
+		} else {
+			ok = w.mutableMemTable.Put(record.SeriesID, record.Timestamp, record.Value)
+		}
+		if !ok {
 			return fmt.Errorf("failed to recover record: seriesID=%d timestamp=%d", record.SeriesID, record.Timestamp)
 		}
 	}
@@ -150,7 +184,7 @@ func (w *Wisp) Flush() error {
 	it := w.immutableMemTable.Iterator()
 	for it.Valid() {
 		key, value := it.Entry()
-		entry := sstable.Entry{SeriesID: key.SeriesID, Timestamp: key.Timestamp, Value: value}
+		entry := sstable.Entry{SeriesID: key.SeriesID, Timestamp: key.Timestamp, Deleted: it.Deleted(), Value: value}
 		if err := writer.Add(entry); err != nil {
 			_ = writer.Close()
 			w.sstableWriter = nil

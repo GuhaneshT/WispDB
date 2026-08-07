@@ -31,6 +31,10 @@ func (it *MemTableIterator) Entry() (skiplist.Key, []byte) {
 	return it.iterator.Entry()
 }
 
+func (it *MemTableIterator) Deleted() bool {
+	return it.iterator.Deleted()
+}
+
 const defaultFlushThreshold uint64 = 4 * 1024 * 1024
 
 func CreateMemTable() (*MemTable, error) {
@@ -53,12 +57,25 @@ func (m *MemTable) Put(seriesID uint64, timestamp int64, value []byte) bool {
 	return true
 }
 
+func (m *MemTable) Delete(seriesID uint64, timestamp int64) bool {
+	if !m.mutable {
+		return false
+	}
+	m.skiplist.Delete(skiplist.Key{SeriesID: seriesID, Timestamp: timestamp})
+	m.size += 8 + 8 + 1
+	return true
+}
+
 func (m *MemTable) Get(seriesID uint64, timestamp int64) ([]byte, bool) {
-	node, found := m.skiplist.Search(skiplist.Key{SeriesID: seriesID, Timestamp: timestamp})
-	if !found {
+	value, found, deleted := m.skiplist.Lookup(skiplist.Key{SeriesID: seriesID, Timestamp: timestamp})
+	if !found || deleted {
 		return nil, false
 	}
-	return node.Value, true
+	return value, true
+}
+
+func (m *MemTable) Lookup(seriesID uint64, timestamp int64) ([]byte, bool, bool) {
+	return m.skiplist.Lookup(skiplist.Key{SeriesID: seriesID, Timestamp: timestamp})
 }
 
 func (m *MemTable) Size() uint64 {

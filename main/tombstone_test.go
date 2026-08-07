@@ -1,12 +1,11 @@
 package main
 
 import (
-	"bytes"
 	"path/filepath"
 	"testing"
 )
 
-func TestWispFlushAndRecover(t *testing.T) {
+func TestWispDeleteSurvivesFlushAndRestart(t *testing.T) {
 	dir := t.TempDir()
 	config := WispConfig{
 		WALPath:               filepath.Join(dir, "wal.log"),
@@ -23,24 +22,22 @@ func TestWispFlushAndRecover(t *testing.T) {
 	if err := db.Insert(1, 10, []byte("alpha")); err != nil {
 		t.Fatalf("Insert() error = %v", err)
 	}
-	if err := db.Insert(1, 20, []byte("beta")); err != nil {
+	if err := db.Delete(1, 10); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if err := db.Insert(2, 20, []byte("beta")); err != nil {
 		t.Fatalf("Insert() error = %v", err)
 	}
 
-	first, found, err := db.Get(1, 10)
-	if err != nil {
+	if _, found, err := db.Get(1, 10); err != nil {
 		t.Fatalf("Get() error = %v", err)
+	} else if found {
+		t.Fatalf("Get() found deleted record")
 	}
-	if !found || !bytes.Equal(first, []byte("alpha")) {
-		t.Fatalf("Get(1, 10) = %q, found=%v", first, found)
-	}
-
-	second, found, err := db.Get(1, 20)
-	if err != nil {
+	if value, found, err := db.Get(2, 20); err != nil {
 		t.Fatalf("Get() error = %v", err)
-	}
-	if !found || !bytes.Equal(second, []byte("beta")) {
-		t.Fatalf("Get(1, 20) = %q, found=%v", second, found)
+	} else if !found || string(value) != "beta" {
+		t.Fatalf("Get() = %q found=%v, want beta true", value, found)
 	}
 
 	if err := db.Close(); err != nil {
@@ -57,19 +54,14 @@ func TestWispFlushAndRecover(t *testing.T) {
 		}
 	})
 
-	first, found, err = reopened.Get(1, 10)
-	if err != nil {
+	if _, found, err := reopened.Get(1, 10); err != nil {
 		t.Fatalf("Get() after reopen error = %v", err)
+	} else if found {
+		t.Fatalf("Get() after reopen found deleted record")
 	}
-	if !found || !bytes.Equal(first, []byte("alpha")) {
-		t.Fatalf("Get(1, 10) after reopen = %q, found=%v", first, found)
-	}
-
-	second, found, err = reopened.Get(1, 20)
-	if err != nil {
+	if value, found, err := reopened.Get(2, 20); err != nil {
 		t.Fatalf("Get() after reopen error = %v", err)
-	}
-	if !found || !bytes.Equal(second, []byte("beta")) {
-		t.Fatalf("Get(1, 20) after reopen = %q, found=%v", second, found)
+	} else if !found || string(value) != "beta" {
+		t.Fatalf("Get() after reopen = %q found=%v, want beta true", value, found)
 	}
 }
