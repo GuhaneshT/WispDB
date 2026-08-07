@@ -47,12 +47,12 @@ func deserializePayload(data []byte) (WALRecord, error) {
 	if err != nil {
 		return WALRecord{}, err
 	}
-	seriesIdBytes := make([]byte, 4)
+	seriesIdBytes := make([]byte, 8)
 	_, err = io.ReadFull(buf, seriesIdBytes) // read seriesID
 	if err != nil {
 		return WALRecord{}, err
 	}
-	seriesId := uint64(binary.LittleEndian.Uint32(seriesIdBytes))
+	seriesId := binary.LittleEndian.Uint64(seriesIdBytes)
 	valueBytes := make([]byte, valueLen)
 	_, err = io.ReadFull(buf, valueBytes)
 	if err != nil {
@@ -62,21 +62,25 @@ func deserializePayload(data []byte) (WALRecord, error) {
 }
 
 type WAL struct {
+	path string
 	file *os.File
 }
 
 func CreateWAL(path string) (*WAL, error) {
-	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0644)
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
 		return nil, err
 	}
-	return &WAL{file: file}, nil
+	return &WAL{path: path, file: file}, nil
 }
 
 // Append record to WAL
 func (w *WAL) AppendRecord(record WALRecord) error {
 	payload, err := serializePayload(record)
 	if err != nil {
+		return err
+	}
+	if _, err := w.file.Seek(0, io.SeekEnd); err != nil {
 		return err
 	}
 	checksum := crc32.ChecksumIEEE(payload)
@@ -133,4 +137,18 @@ func (w *WAL) Replay() ([]WALRecord, error) {
 		records = append(records, record)
 	}
 	return records, nil
+}
+
+func (w *WAL) Reset() error {
+	if err := w.file.Truncate(0); err != nil {
+		return err
+	}
+	if _, err := w.file.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	return w.file.Sync()
+}
+
+func (w *WAL) Close() error {
+	return w.file.Close()
 }

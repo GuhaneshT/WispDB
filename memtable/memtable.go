@@ -31,8 +31,17 @@ func (it *MemTableIterator) Entry() (skiplist.Key, []byte) {
 	return it.iterator.Entry()
 }
 
+const defaultFlushThreshold uint64 = 4 * 1024 * 1024
+
 func CreateMemTable() (*MemTable, error) {
-	return &MemTable{skiplist: skiplist.NewSkipList(16), mutable: true, flushThreshold: 4 * 1024 * 1024}, nil
+	return CreateMemTableWithThreshold(defaultFlushThreshold)
+}
+
+func CreateMemTableWithThreshold(flushThreshold uint64) (*MemTable, error) {
+	if flushThreshold == 0 {
+		flushThreshold = defaultFlushThreshold
+	}
+	return &MemTable{skiplist: skiplist.NewSkipList(16), mutable: true, flushThreshold: flushThreshold}, nil
 }
 
 func (m *MemTable) Put(seriesID uint64, timestamp int64, value []byte) bool {
