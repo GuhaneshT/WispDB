@@ -17,6 +17,7 @@ type IndexEntry struct {
 type SSTable struct {
 	Path       string
 	EntryCount uint64
+	Iterator  *Iterator
 }
 
 const (

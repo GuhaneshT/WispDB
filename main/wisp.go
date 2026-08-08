@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"wisp/compactor"
 	"wisp/memtable"
 	"wisp/sstable"
 	"wisp/wal"
@@ -16,18 +17,18 @@ type Record struct {
 }
 
 const (
-	defaultWALPath            = "wal.log"
-	defaultSSTablePath        = "data.sst"
-	defaultSSTableBlockSize   = sstable.DefaultBlockSize
-	defaultMemTableThreshold   = 4 * 1024 * 1024
+	defaultWALPath          = "wal.log"
+	defaultSSTablePath      = "data.sst"
+	defaultSSTableBlockSize = sstable.DefaultBlockSize
+	defaultMemTableThreshold = 4 * 1024 * 1024
 )
 
 type WispConfig struct {
-	WALPath              string
-	SSTablePath          string
-	SSTableBlockSize     uint32
+	WALPath                string
+	SSTablePath            string
+	SSTableBlockSize       uint32
 	MemTableFlushThreshold uint64
-	SSTableList          *SSTableList
+	SSTableList            *sstable.SSTableList
 }
 
 type Wisp struct {
@@ -44,11 +45,11 @@ func CreateWisp() (*Wisp, error) {
 
 func DefaultWispConfig() WispConfig {
 	return WispConfig{
-		WALPath:               defaultWALPath,
-		SSTablePath:           defaultSSTablePath,
-		SSTableBlockSize:      defaultSSTableBlockSize,
+		WALPath:                defaultWALPath,
+		SSTablePath:            defaultSSTablePath,
+		SSTableBlockSize:       defaultSSTableBlockSize,
 		MemTableFlushThreshold: defaultMemTableThreshold,
-		SSTableList:          &SSTableList{},
+		SSTableList:            &sstable.SSTableList{},
 	}
 }
 
@@ -66,7 +67,7 @@ func CreateWispWithConfig(config WispConfig) (*Wisp, error) {
 		config.MemTableFlushThreshold = defaultMemTableThreshold
 	}
 	if config.SSTableList == nil {
-		config.SSTableList = &SSTableList{}
+		config.SSTableList = &sstable.SSTableList{}
 	}
 
 	walInstance, err := wal.CreateWAL(config.WALPath)
@@ -149,7 +150,7 @@ func (w *Wisp) Get(seriesID uint64, timestamp int64) ([]byte, bool, error) {
 			return value, true, nil
 		}
 	}
-	for _, table := range w.config.SSTableList.tables {
+	for _, table := range w.config.SSTableList.GetTables() {
 		value, found, err := table.Reader.Get(seriesID, timestamp)
 		if err != nil {
 			return nil, false, err
@@ -161,7 +162,11 @@ func (w *Wisp) Get(seriesID uint64, timestamp int64) ([]byte, bool, error) {
 	return nil, false, nil
 }
 
-// recover on startup, to be added after sstable is implemented
+func (w *Wisp) Compact() error {
+	c := compactor.NewCompactor(w.config.SSTableList)
+	return c.CompactAll(w.config.SSTablePath, true)
+}
+
 func (w *Wisp) Recover() error {
 	records, err := w.wal.Replay()
 	if err != nil {
@@ -185,9 +190,10 @@ func (w *Wisp) Flush() error {
 	if w.immutableMemTable == nil {
 		return nil
 	}
+	tables := w.config.SSTableList.GetTables()
 	var nextGen uint64 = 1
-	if n := len(w.config.SSTableList.tables); n > 0 {
-		nextGen = w.config.SSTableList.tables[0].Gen + 1
+	if n := len(tables); n > 0 {
+		nextGen = tables[0].Gen + 1
 	}
 	path := w.config.SSTableList.NewPath(w.config.SSTablePath, nextGen)
 	writer, err := sstable.NewWriter(path, w.config.SSTableBlockSize)
@@ -215,7 +221,7 @@ func (w *Wisp) Flush() error {
 		w.sstableWriter = nil
 		return err
 	}
-	w.config.SSTableList.Add(&SSTableFile{Path: path, Gen: nextGen, Reader: reader})
+	w.config.SSTableList.Add(&sstable.SSTableFile{Path: path, Gen: nextGen, Reader: reader})
 	if err := w.wal.Reset(); err != nil {
 		w.sstableWriter = nil
 		return err
