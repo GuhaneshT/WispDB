@@ -3,7 +3,6 @@ package sstable
 import (
 	"encoding/binary"
 	"fmt"
-	"io"
 	"os"
 )
 
@@ -34,12 +33,8 @@ func (r *Reader) readFooter() error {
 	if info.Size() < FooterSize {
 		return fmt.Errorf("sstable too small")
 	}
-	_, err = r.file.Seek(-FooterSize, io.SeekEnd)
-	if err != nil {
-		return err
-	}
 	footer := make([]byte, FooterSize)
-	if _, err := io.ReadFull(r.file, footer); err != nil {
+	if _, err := r.file.ReadAt(footer, info.Size()-int64(FooterSize)); err != nil {
 		return err
 	}
 	magic := binary.LittleEndian.Uint32(footer[0:4])
@@ -60,11 +55,8 @@ func (r *Reader) readIndex(offset uint64, size uint64) error {
 	if size%28 != 0 {
 		return fmt.Errorf("corrupt index size")
 	}
-	if _, err := r.file.Seek(int64(offset), io.SeekStart); err != nil {
-		return err
-	}
 	data := make([]byte, size)
-	if _, err := io.ReadFull(r.file, data); err != nil {
+	if _, err := r.file.ReadAt(data, int64(offset)); err != nil {
 		return err
 	}
 	count := size / 28
@@ -120,10 +112,7 @@ func (r *Reader) findBlock(seriesID uint64, timestamp int64) (IndexEntry, bool) 
 
 func (r *Reader) readBlock(indexEntry IndexEntry) ([]Entry, error) {
 	data := make([]byte, indexEntry.Size)
-	if _, err := r.file.Seek(int64(indexEntry.Offset), io.SeekStart); err != nil {
-		return nil, err
-	}
-	if _, err := io.ReadFull(r.file, data); err != nil {
+	if _, err := r.file.ReadAt(data, int64(indexEntry.Offset)); err != nil {
 		return nil, err
 	}
 	var entries []Entry

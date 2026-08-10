@@ -144,11 +144,7 @@ func CompactSSTables(tables []*sstable.SSTableFile, opts CompactorOptions) (*sst
 		return nil, nil
 	}
 
-	return &sstable.SSTableFile{
-		Path:   opts.OutputPath,
-		Gen:    opts.TargetGen,
-		Reader: reader,
-	}, nil
+	return sstable.NewSSTableFile(opts.OutputPath, opts.TargetGen, reader), nil
 }
 
 func (c *Compactor) CompactAll(basePath string, isMajor bool) error {
@@ -159,14 +155,9 @@ func (c *Compactor) CompactAll(basePath string, isMajor bool) error {
 	if len(tables) == 0 {
 		return nil
 	}
+	defer sstable.ReleaseTables(tables)
 
-	var maxGen uint64
-	for _, t := range tables {
-		if t.Gen > maxGen {
-			maxGen = t.Gen
-		}
-	}
-	targetGen := maxGen + 1
+	targetGen := c.sstableList.NextGen()
 	outputPath := c.sstableList.NewPath(basePath, targetGen)
 
 	newFile, err := CompactSSTables(tables, CompactorOptions{
@@ -186,13 +177,9 @@ func (c *Compactor) CompactRange(tables []*sstable.SSTableFile, basePath string,
 	if len(tables) == 0 {
 		return nil
 	}
-	var maxGen uint64
-	for _, t := range tables {
-		if t.Gen > maxGen {
-			maxGen = t.Gen
-		}
-	}
-	targetGen := maxGen + 1
+	defer sstable.ReleaseTables(tables)
+
+	targetGen := c.sstableList.NextGen()
 	outputPath := c.sstableList.NewPath(basePath, targetGen)
 
 	newFile, err := CompactSSTables(tables, CompactorOptions{

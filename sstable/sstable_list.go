@@ -8,22 +8,81 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 type SSTableFile struct {
-	Path   string
-	Gen    uint64
-	Reader *Reader
+	Path     string
+	Gen      uint64
+	Reader   *Reader
+	refCount atomic.Int32
+	unlinked atomic.Bool
+}
+
+func NewSSTableFile(path string, gen uint64, reader *Reader) *SSTableFile {
+	sf := &SSTableFile{
+		Path:   path,
+		Gen:    gen,
+		Reader: reader,
+	}
+	sf.refCount.Store(1)
+	return sf
+}
+
+func (sf *SSTableFile) IncrRef() bool {
+	for {
+		cur := sf.refCount.Load()
+		if cur <= 0 || sf.unlinked.Load() {
+			return false
+		}
+		if sf.refCount.CompareAndSwap(cur, cur+1) {
+			return true
+		}
+	}
+}
+
+func (sf *SSTableFile) DecrRef() error {
+	newRef := sf.refCount.Add(-1)
+	if newRef < 0 {
+		return nil
+	}
+	if newRef == 0 {
+		var firstErr error
+		if sf.Reader != nil {
+			if err := sf.Reader.Close(); err != nil {
+				firstErr = err
+			}
+			sf.Reader = nil
+		}
+		if err := os.Remove(sf.Path); err != nil && !os.IsNotExist(err) && firstErr == nil {
+			firstErr = err
+		}
+		return firstErr
+	}
+	return nil
 }
 
 type SSTableList struct {
-	mu     sync.RWMutex
-	tables []*SSTableFile
+	mu      sync.RWMutex
+	tables  []*SSTableFile
+	nextGen atomic.Uint64
+}
+
+func (l *SSTableList) NextGen() uint64 {
+	return l.nextGen.Add(1)
 }
 
 func (l *SSTableList) ensure() {
 	if l.tables == nil {
 		l.tables = make([]*SSTableFile, 0)
+	}
+}
+
+func ReleaseTables(tables []*SSTableFile) {
+	for _, t := range tables {
+		if t != nil {
+			_ = t.DecrRef()
+		}
 	}
 }
 
@@ -33,12 +92,28 @@ func (l *SSTableList) GetTables() []*SSTableFile {
 	if l.tables == nil {
 		return nil
 	}
-	res := make([]*SSTableFile, len(l.tables))
-	copy(res, l.tables)
+	res := make([]*SSTableFile, 0, len(l.tables))
+	for _, t := range l.tables {
+		if t.IncrRef() {
+			res = append(res, t)
+		}
+	}
 	return res
 }
 
 func (l *SSTableList) Add(table *SSTableFile) {
+	if table.refCount.Load() == 0 {
+		table.refCount.Store(1)
+	}
+	for {
+		cur := l.nextGen.Load()
+		if table.Gen <= cur {
+			break
+		}
+		if l.nextGen.CompareAndSwap(cur, table.Gen) {
+			break
+		}
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.ensure()
@@ -67,6 +142,9 @@ func (l *SSTableList) ReplaceTables(oldTables []*SSTableFile, newTable *SSTableF
 	}
 
 	if newTable != nil {
+		if newTable.refCount.Load() == 0 {
+			newTable.refCount.Store(1)
+		}
 		kept = append(kept, newTable)
 	}
 
@@ -82,13 +160,8 @@ func (l *SSTableList) ReplaceTables(oldTables []*SSTableFile, newTable *SSTableF
 		if old == nil {
 			continue
 		}
-		if old.Reader != nil {
-			if err := old.Reader.Close(); err != nil && firstErr == nil {
-				firstErr = err
-			}
-			old.Reader = nil
-		}
-		if err := os.Remove(old.Path); err != nil && !os.IsNotExist(err) && firstErr == nil {
+		old.unlinked.Store(true)
+		if err := old.DecrRef(); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
@@ -101,11 +174,9 @@ func (l *SSTableList) Close() error {
 	defer l.mu.Unlock()
 	var closeErr error
 	for _, table := range l.tables {
-		if table.Reader != nil {
-			if err := table.Reader.Close(); err != nil && closeErr == nil {
-				closeErr = err
-			}
-			table.Reader = nil
+		table.unlinked.Store(true)
+		if err := table.DecrRef(); err != nil && closeErr == nil {
+			closeErr = err
 		}
 	}
 	l.tables = nil
@@ -125,6 +196,7 @@ func (l *SSTableList) Load(basePath string) error {
 		return err
 	}
 
+	var maxGen uint64
 	for _, entry := range entries {
 		name := entry.Name()
 		if !strings.HasPrefix(name, base+"_") || !strings.HasSuffix(name, ext) {
@@ -135,13 +207,17 @@ func (l *SSTableList) Load(basePath string) error {
 		if err != nil {
 			continue
 		}
+		if gen > maxGen {
+			maxGen = gen
+		}
 		path := filepath.Join(dir, name)
 		reader, err := OpenReader(path)
 		if err != nil {
 			return fmt.Errorf("open sstable %s: %w", path, err)
 		}
-		l.tables = append(l.tables, &SSTableFile{Path: path, Gen: gen, Reader: reader})
+		l.tables = append(l.tables, NewSSTableFile(path, gen, reader))
 	}
+	l.nextGen.Store(maxGen)
 	sort.Slice(l.tables, func(i, j int) bool {
 		return l.tables[i].Gen > l.tables[j].Gen
 	})
