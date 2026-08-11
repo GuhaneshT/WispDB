@@ -100,7 +100,7 @@ func CompactSSTables(tables []*sstable.SSTableFile, opts CompactorOptions) (*sst
 		timestamp int64
 	}
 	var lastKey *keyStruct
-
+	
 	for h.Len() > 0 {
 		item := heap.Pop(h).(heapItem)
 		entry := item.entry
@@ -154,6 +154,18 @@ func (c *Compactor) CompactAll(basePath string, isMajor bool) error {
 	tables := c.sstableList.GetTables()
 	if len(tables) == 0 {
 		return nil
+	}
+
+	fmt.Println("=== COMPACTION START ===")
+	fmt.Printf("isMajor=%v\n", isMajor)
+	fmt.Printf("tables=%d\n", len(tables))
+
+	for _, table := range tables {
+		fmt.Printf(
+			"TABLE: gen=%d path=%s\n",
+			table.Gen,
+			table.Path,
+		)
 	}
 	defer sstable.ReleaseTables(tables)
 

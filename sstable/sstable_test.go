@@ -39,7 +39,7 @@ func TestWriterReaderRoundTrip(t *testing.T) {
 	})
 
 	for _, want := range entries {
-		got, found, err := reader.Get(want.SeriesID, want.Timestamp)
+		got, found, _, err := reader.Get(want.SeriesID, want.Timestamp)
 		if err != nil {
 			t.Fatalf("Get(%d, %d) error = %v", want.SeriesID, want.Timestamp, err)
 		}
@@ -51,7 +51,7 @@ func TestWriterReaderRoundTrip(t *testing.T) {
 		}
 	}
 
-	if _, found, err := reader.Get(999, 999); err != nil {
+	if _, found,_, err := reader.Get(999, 999); err != nil {
 		t.Fatalf("Get() unexpected error = %v", err)
 	} else if found {
 		t.Fatalf("Get() found non-existent record")
@@ -89,9 +89,9 @@ func TestWriterReaderTombstoneRoundTrip(t *testing.T) {
 		}
 	})
 
-	if _, found, err := reader.Get(1, 20); err != nil {
+	if _, found,deleted, err := reader.Get(1, 20); err != nil {
 		t.Fatalf("Get() unexpected error = %v", err)
-	} else if found {
+	} else if found || !deleted {
 		t.Fatalf("Get() found tombstoned record")
 	}
 }

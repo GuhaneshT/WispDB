@@ -29,15 +29,15 @@ func TestWispDeleteSurvivesFlushAndRestart(t *testing.T) {
 		t.Fatalf("Insert() error = %v", err)
 	}
 
-	if _, found, err := db.Get(1, 10); err != nil {
+	if _, found,deleted, err := db.Get(1, 10); err != nil {
 		t.Fatalf("Get() error = %v", err)
-	} else if found {
+	} else if found || !deleted{
 		t.Fatalf("Get() found deleted record")
 	}
-	if value, found, err := db.Get(2, 20); err != nil {
+	if value, found,deleted, err := db.Get(2, 20); err != nil {
 		t.Fatalf("Get() error = %v", err)
-	} else if !found || string(value) != "beta" {
-		t.Fatalf("Get() = %q found=%v, want beta true", value, found)
+	} else if !found || !deleted || string(value) != "beta" {
+		t.Fatalf("Get() = %q found=%v, deleted=%v, want beta true", value, found, deleted)
 	}
 
 	if err := db.Close(); err != nil {
@@ -54,14 +54,14 @@ func TestWispDeleteSurvivesFlushAndRestart(t *testing.T) {
 		}
 	})
 
-	if _, found, err := reopened.Get(1, 10); err != nil {
+	if _, found, deleted, err := reopened.Get(1, 10); err != nil {
 		t.Fatalf("Get() after reopen error = %v", err)
-	} else if found {
+	} else if found || !deleted {
 		t.Fatalf("Get() after reopen found deleted record")
 	}
-	if value, found, err := reopened.Get(2, 20); err != nil {
+	if value, found, deleted, err := reopened.Get(2, 20); err != nil {
 		t.Fatalf("Get() after reopen error = %v", err)
-	} else if !found || string(value) != "beta" {
-		t.Fatalf("Get() after reopen = %q found=%v, want beta true", value, found)
+	} else if !found || !deleted || string(value) != "beta" {
+		t.Fatalf("Get() after reopen = %q found=%v, deleted=%v, want beta true", value, found, deleted)
 	}
 }

@@ -169,7 +169,7 @@ func (w *Wisp) prepareMutableMemTableLocked() error {
 	return nil
 }
 
-func (w *Wisp) Get(seriesID uint64, timestamp int64) ([]byte, bool, error) {
+func (w *Wisp) Get(seriesID uint64, timestamp int64) ([]byte, bool,bool, error) {
 	w.mu.RLock()
 	mut := w.mutableMemTable
 	imm := w.immutableMemTable
@@ -181,31 +181,39 @@ func (w *Wisp) Get(seriesID uint64, timestamp int64) ([]byte, bool, error) {
 	if mut != nil {
 		if value, found, deleted := mut.Lookup(seriesID, timestamp); found {
 			if deleted {
-				return nil, false, nil
+				return nil, false,true, nil
 			}
-			return value, true, nil
+			return value, true, false, nil
 		}
 	}
 
 	if imm != nil {
 		if value, found, deleted := imm.Lookup(seriesID, timestamp); found {
 			if deleted {
-				return nil, false, nil
+				return nil, false,true, nil
 			}
-			return value, true, nil
+			return value, true, false, nil
 		}
 	}
 
-	for _, table := range tables {
-		value, found, err := table.Reader.Get(seriesID, timestamp)
-		if err != nil {
-			return nil, false, err
-		}
-		if found {
-			return value, true, nil
-		}
-	}
-	return nil, false, nil
+for _, table := range tables {
+    value, found, deleted, err := table.Reader.Get(seriesID, timestamp)
+
+    if err != nil {
+        return nil, false, deleted, err
+    }
+
+    // Tombstone is authoritative.
+    // Do NOT search older SSTables.
+    if deleted {
+        return nil, false, true, nil
+    }
+
+    if found {
+        return value, true, false, nil
+    }
+}
+	return nil, false, false, nil
 }
 
 func (w *Wisp) Compact() error {

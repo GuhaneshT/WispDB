@@ -71,7 +71,7 @@ func TestConcurrentReadsWritesAndCompaction(t *testing.T) {
 			defer wg.Done()
 			for i := 0; i < recordsPerWriter*2; i++ {
 				seriesID := uint64((i % numWriters) * 1000 + (i / numWriters))
-				_, _, _ = db.Get(seriesID, int64(i/numWriters))
+				_, _,_, _ = db.Get(seriesID, int64(i/numWriters))
 				time.Sleep(100 * time.Microsecond)
 			}
 		}(r)
@@ -87,12 +87,12 @@ func TestConcurrentReadsWritesAndCompaction(t *testing.T) {
 		for i := 0; i < recordsPerWriter; i++ {
 			seriesID := uint64(w*1000 + i)
 			expected := fmt.Sprintf("val-%d-%d", w, i)
-			val, found, err := db.Get(seriesID, int64(i))
+			val, found, deleted, err := db.Get(seriesID, int64(i))
 			if err != nil {
 				t.Fatalf("Get error after test seriesID=%d: %v", seriesID, err)
 			}
-			if !found || string(val) != expected {
-				t.Fatalf("Get seriesID=%d got (%q, %v), want (%q, true)", seriesID, val, found, expected)
+			if !found || !deleted || string(val) != expected {
+				t.Fatalf("Get seriesID=%d got (%q, %v, %v), want (%q, true, true)", seriesID, val, found, deleted, expected)
 			}
 		}
 	}

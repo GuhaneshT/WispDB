@@ -27,20 +27,20 @@ func TestWispFlushAndRecover(t *testing.T) {
 		t.Fatalf("Insert() error = %v", err)
 	}
 
-	first, found, err := db.Get(1, 10)
+	first, found, deleted, err := db.Get(1, 10)
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
-	if !found || !bytes.Equal(first, []byte("alpha")) {
-		t.Fatalf("Get(1, 10) = %q, found=%v", first, found)
+	if !found || deleted || !bytes.Equal(first, []byte("alpha")) {
+		t.Fatalf("Get(1, 10) = %q, found=%v, deleted=%v", first, found, deleted)
 	}
 
-	second, found, err := db.Get(1, 20)
+	second, found, deleted, err := db.Get(1, 20)
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
-	if !found || !bytes.Equal(second, []byte("beta")) {
-		t.Fatalf("Get(1, 20) = %q, found=%v", second, found)
+	if !found || deleted || !bytes.Equal(second, []byte("beta")) {
+		t.Fatalf("Get(1, 20) = %q, found=%v, deleted=%v", second, found, deleted)
 	}
 
 	if err := db.Close(); err != nil {
@@ -57,19 +57,19 @@ func TestWispFlushAndRecover(t *testing.T) {
 		}
 	})
 
-	first, found, err = reopened.Get(1, 10)
+	first, found, deleted, err = reopened.Get(1, 10)
 	if err != nil {
 		t.Fatalf("Get() after reopen error = %v", err)
 	}
-	if !found || !bytes.Equal(first, []byte("alpha")) {
-		t.Fatalf("Get(1, 10) after reopen = %q, found=%v", first, found)
+	if !found || deleted || !bytes.Equal(first, []byte("alpha")) {
+		t.Fatalf("Get(1, 10) after reopen = %q, found=%v, deleted=%v", first, found, deleted		)
 	}
 
-	second, found, err = reopened.Get(1, 20)
+	second, found, deleted, err = reopened.Get(1, 20)
 	if err != nil {
 		t.Fatalf("Get() after reopen error = %v", err)
 	}
-	if !found || !bytes.Equal(second, []byte("beta")) {
-		t.Fatalf("Get(1, 20) after reopen = %q, found=%v", second, found)
+	if !found || deleted || !bytes.Equal(second, []byte("beta")) {
+		t.Fatalf("Get(1, 20) after reopen = %q, found=%v, deleted=%v", second, found, deleted)
 	}
 }

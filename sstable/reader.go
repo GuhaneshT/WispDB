@@ -68,25 +68,62 @@ func (r *Reader) readIndex(offset uint64, size uint64) error {
 	return nil
 }
 
-func (r *Reader) Get(seriesID uint64, timestamp int64) ([]byte, bool, error) {
+func (r *Reader) Get(seriesID uint64, timestamp int64) ([]byte, bool,bool, 	 error) {
 	block, found := r.findBlock(seriesID, timestamp)
 	if !found {
-		return nil, false, nil
+		return nil, false,false, nil
 	}
 	entries, err := r.readBlock(block)
 	if err != nil {
-		return nil, false, err
+		return nil, false,false, err
 	}
 	for _, entry := range entries {
 		if entry.SeriesID == seriesID && entry.Timestamp == timestamp {
 			if entry.Deleted {
-				return nil, false, nil
+				return nil, false, true, nil
 			}
-			return entry.Value, true, nil
+			return entry.Value, true, false, nil
 		}
 	}
-	return nil, false, nil
+	return nil, false, false, nil
 }
+
+// func (r *Reader) Get(seriesID uint64, timestamp int64) ([]byte, bool, bool, error) {
+// 	block, found := r.findBlock(seriesID, timestamp)
+
+// 	if !found {
+// 		fmt.Printf("GET: block not found\n")
+// 		return nil, false, false, nil
+// 	}
+
+// 	entries, err := r.readBlock(block)
+// 	if err != nil {
+// 		return nil, false, false, err
+// 	}
+
+// 	for _, entry := range entries {
+// 		if entry.SeriesID == seriesID && entry.Timestamp == timestamp {
+
+// 			fmt.Printf(
+// 				"GET MATCH: series=%d timestamp=%d deleted=%v\n",
+// 				entry.SeriesID,
+// 				entry.Timestamp,
+// 				entry.Deleted,
+// 			)
+
+// 			if entry.Deleted {
+// 				fmt.Println("GET RETURN: found=false deleted=true")
+// 				return nil, false, true, nil
+// 			}
+
+// 			fmt.Println("GET RETURN: found=true deleted=false")
+// 			return entry.Value, true, false, nil
+// 		}
+// 	}
+
+// 	fmt.Println("GET: matching entry not found")
+// 	return nil, false, false, nil
+// }
 
 func (r *Reader) Close() error {
 	return r.file.Close()
@@ -128,6 +165,12 @@ func (r *Reader) readBlock(indexEntry IndexEntry) ([]Entry, error) {
 		seriesID := binary.LittleEndian.Uint64(data[pos : pos+8])
 		timestamp := int64(binary.LittleEndian.Uint64(data[pos+8 : pos+16]))
 		deleted := data[pos+16] != 0
+		fmt.Printf(
+			"DEBUG: series=%d timestamp=%d deleted=%v\n",
+			seriesID,
+			timestamp,
+			deleted,
+		)
 		valueLength := int(binary.LittleEndian.Uint32(data[pos+17 : pos+21]))
 		valueStart := pos + 21
 		valueEnd := valueStart + valueLength

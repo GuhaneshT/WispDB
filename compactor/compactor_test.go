@@ -54,6 +54,7 @@ func TestCompactorMultiSSTableMerge(t *testing.T) {
 	}
 
 	tables := list.GetTables()
+	defer sstable.ReleaseTables(tables)
 	if len(tables) != 1 {
 		t.Fatalf("expected 1 table after compaction, got %d", len(tables))
 	}
@@ -64,19 +65,19 @@ func TestCompactorMultiSSTableMerge(t *testing.T) {
 	reader := tables[0].Reader
 
 	// Verify key (1, 10) returns updated value "v1_new"
-	val, found, err := reader.Get(1, 10)
+	val, found,_, err := reader.Get(1, 10)
 	if err != nil || !found || !bytes.Equal(val, []byte("v1_new")) {
 		t.Fatalf("Get(1, 10) = %q, found=%v, err=%v; want v1_new", val, found, err)
 	}
 
 	// Verify key (2, 20) returns "v2_original"
-	val, found, err = reader.Get(2, 20)
+	val, found,_, err = reader.Get(2, 20)
 	if err != nil || !found || !bytes.Equal(val, []byte("v2_original")) {
 		t.Fatalf("Get(2, 20) = %q, found=%v, err=%v; want v2_original", val, found, err)
 	}
 
 	// Verify key (3, 30) returns "v3_added"
-	val, found, err = reader.Get(3, 30)
+	val, found,_, err = reader.Get(3, 30)
 	if err != nil || !found || !bytes.Equal(val, []byte("v3_added")) {
 		t.Fatalf("Get(3, 30) = %q, found=%v, err=%v; want v3_added", val, found, err)
 	}
@@ -124,6 +125,7 @@ func TestCompactorTombstonePurgeMajor(t *testing.T) {
 	}
 
 	tables := list.GetTables()
+	defer sstable.ReleaseTables(tables)
 	// Since all records in Gen1/Gen2 resulted in a purged tombstone, remaining table list should be empty
 	if len(tables) != 0 {
 		t.Fatalf("expected 0 tables after purging all tombstones, got %d", len(tables))
@@ -158,12 +160,13 @@ func TestCompactorTombstonePreserveMinor(t *testing.T) {
 	}
 
 	tables := list.GetTables()
+	defer sstable.ReleaseTables(tables)
 	if len(tables) != 1 {
 		t.Fatalf("expected 1 table after minor compaction, got %d", len(tables))
 	}
 
-	val, found, err := tables[0].Reader.Get(1, 100)
-	if err != nil || found || val != nil {
+	val, found,deleted, err := tables[0].Reader.Get(1, 100)
+	if err != nil || !deleted || found || val != nil {
 		t.Fatalf("expected record to remain tombstoned (not found), got found=%v, val=%v", found, val)
 	}
 
