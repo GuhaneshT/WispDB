@@ -91,9 +91,17 @@ func TestConcurrentReadsWritesAndCompaction(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Get error after test seriesID=%d: %v", seriesID, err)
 			}
-			if !found || !deleted || string(val) != expected {
-				t.Fatalf("Get seriesID=%d got (%q, %v, %v), want (%q, true, true)", seriesID, val, found, deleted, expected)
-			}
+	if !found || deleted || string(val) != expected {
+		t.Fatalf(
+			"Get seriesID=%d timestamp=%d got value=%q found=%v deleted=%v, want value=%q found=true deleted=false",
+			seriesID,
+			i,
+			val,
+			found,
+			deleted,
+			expected,
+		)
+	}
 		}
 	}
 }

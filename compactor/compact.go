@@ -162,17 +162,17 @@ func (c *Compactor) CompactAll(basePath string, isMajor bool) error {
 		return nil
 	}
 
-	fmt.Println("=== COMPACTION START ===")
-	fmt.Printf("isMajor=%v\n", isMajor)
-	fmt.Printf("tables=%d\n", len(tables))
+	// fmt.Println("=== COMPACTION START ===")
+	// fmt.Printf("isMajor=%v\n", isMajor)
+	// fmt.Printf("tables=%d\n", len(tables))
 
-	for _, table := range tables {
-		fmt.Printf(
-			"TABLE: gen=%d path=%s\n",
-			table.Gen,
-			table.Path,
-		)
-	}
+	// for _, table := range tables {
+	// 	fmt.Printf(
+	// 		"TABLE: gen=%d path=%s\n",
+	// 		table.Gen,
+	// 		table.Path,
+	// 	)
+	// }
 	defer sstable.ReleaseTables(tables)
 
 	targetGen := c.sstableList.NextGen()

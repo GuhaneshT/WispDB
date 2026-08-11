@@ -165,12 +165,12 @@ func (r *Reader) readBlock(indexEntry IndexEntry) ([]Entry, error) {
 		seriesID := binary.LittleEndian.Uint64(data[pos : pos+8])
 		timestamp := int64(binary.LittleEndian.Uint64(data[pos+8 : pos+16]))
 		deleted := data[pos+16] != 0
-		fmt.Printf(
-			"DEBUG: series=%d timestamp=%d deleted=%v\n",
-			seriesID,
-			timestamp,
-			deleted,
-		)
+		// fmt.Printf(
+		// 	"DEBUG: series=%d timestamp=%d deleted=%v\n",
+		// 	seriesID,
+		// 	timestamp,
+		// 	deleted,
+		// )
 		valueLength := int(binary.LittleEndian.Uint32(data[pos+17 : pos+21]))
 		valueStart := pos + 21
 		valueEnd := valueStart + valueLength
