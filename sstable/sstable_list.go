@@ -17,6 +17,7 @@ type SSTableFile struct {
 	Reader   *Reader
 	refCount atomic.Int32
 	unlinked atomic.Bool
+	closed atomic.Bool
 }
 
 func NewSSTableFile(path string, gen uint64, reader *Reader) *SSTableFile {
@@ -32,7 +33,7 @@ func NewSSTableFile(path string, gen uint64, reader *Reader) *SSTableFile {
 func (sf *SSTableFile) IncrRef() bool {
 	for {
 		cur := sf.refCount.Load()
-		if cur <= 0 || sf.unlinked.Load() {
+		if cur <= 0 || sf.unlinked.Load() || sf.closed.Load() {
 			return false
 		}
 		if sf.refCount.CompareAndSwap(cur, cur+1) {
@@ -44,7 +45,7 @@ func (sf *SSTableFile) IncrRef() bool {
 func (sf *SSTableFile) DecrRef() error {
 	newRef := sf.refCount.Add(-1)
 	if newRef < 0 {
-		return nil
+		return fmt.Errorf("sstable %s reference count went negative",sf.Path,)
 	}
 	if newRef == 0 {
 		var firstErr error
@@ -54,9 +55,15 @@ func (sf *SSTableFile) DecrRef() error {
 			}
 			sf.Reader = nil
 		}
-		if err := os.Remove(sf.Path); err != nil && !os.IsNotExist(err) && firstErr == nil {
+
+		if sf.unlinked.Load() {
+
+			if err := os.Remove(sf.Path); err != nil && !os.IsNotExist(err) && firstErr == nil {
 			firstErr = err
 		}
+
+		}
+		
 		return firstErr
 	}
 	return nil
@@ -174,7 +181,7 @@ func (l *SSTableList) Close() error {
 	defer l.mu.Unlock()
 	var closeErr error
 	for _, table := range l.tables {
-		table.unlinked.Store(true)
+		table.closed.Store(true)
 		if err := table.DecrRef(); err != nil && closeErr == nil {
 			closeErr = err
 		}
