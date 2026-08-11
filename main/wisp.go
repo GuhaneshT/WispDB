@@ -321,10 +321,10 @@ func (w *Wisp) flushImmutable(imm *memtable.MemTable) error {
 
 	w.mu.Lock()
 	w.sstableWriter = nil
-	if err := w.wal.Reset(); err != nil {
-		w.mu.Unlock()
-		return err
-	}
+	// if err := w.wal.Reset(); err != nil {
+	// 	w.mu.Unlock()
+	// 	return err
+	// }
 	if w.immutableMemTable == imm {
 		w.immutableMemTable = nil
 	}
@@ -344,6 +344,10 @@ func (w *Wisp) openSSTables() error {
 }
 
 func (w *Wisp) Close() error {
+
+	if err := w.Flush(); err != nil {
+        return err
+    }
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
