@@ -100,7 +100,7 @@ func CompactSSTables(tables []*sstable.SSTableFile, opts CompactorOptions) (*sst
 		timestamp int64
 	}
 	var lastKey *keyStruct
-	
+	outputCount := 0
 	for h.Len() > 0 {
 		item := heap.Pop(h).(heapItem)
 		entry := item.entry
@@ -130,18 +130,24 @@ func CompactSSTables(tables []*sstable.SSTableFile, opts CompactorOptions) (*sst
 		if writeErr = writer.Add(entry); writeErr != nil {
 			return nil, fmt.Errorf("write entry during compaction: %w", writeErr)
 		}
+		outputCount++
 	}
 
 	if writeErr = writer.Close(); writeErr != nil {
 		return nil, fmt.Errorf("close compact writer: %w", writeErr)
 	}
+	if outputCount == 0 {
+		if err := os.Remove(opts.OutputPath); err != nil && !os.IsNotExist(err) {
+			return nil, fmt.Errorf("remove empty compacted sstable: %w", err)
+		}
 
+		return nil, nil
+	}
 	
 	reader, err := sstable.OpenReader(opts.OutputPath)
 	if err != nil {
 		_ = os.Remove(opts.OutputPath)
-		// If footer reading failed because table was empty (e.g. all entries were tombstones purged)
-		return nil, nil
+		return nil, fmt.Errorf("open compacted sstable: %w", err)
 	}
 
 	return sstable.NewSSTableFile(opts.OutputPath, opts.TargetGen, reader), nil
