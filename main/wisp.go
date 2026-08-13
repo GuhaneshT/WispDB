@@ -22,6 +22,7 @@ const (
 	defaultSSTablePath      = "data.sst"
 	defaultSSTableBlockSize = sstable.DefaultBlockSize
 	defaultMemTableThreshold = 4 * 1024 * 1024
+	defaultWALMaxSegmentSize = wal.DefaultMaxSegmentSize
 )
 
 type WispConfig struct {
@@ -29,6 +30,7 @@ type WispConfig struct {
 	SSTablePath            string
 	SSTableBlockSize       uint32
 	MemTableFlushThreshold uint64
+	WALMaxSegmentSize      uint64
 	SSTableList            *sstable.SSTableList
 }
 
@@ -39,7 +41,11 @@ type Wisp struct {
 	wal               *wal.WAL
 	mutableMemTable   *memtable.MemTable
 	immutableMemTable *memtable.MemTable
-	sstableWriter     *sstable.Writer
+	// immutableWALSegment is the highest WAL segment sealed at the moment the
+	// immutable memtable was frozen. Once that memtable reaches an SSTable,
+	// every segment up to and including this one is reclaimable.
+	immutableWALSegment uint64
+	sstableWriter       *sstable.Writer
 }
 
 func CreateWisp() (*Wisp, error) {
@@ -52,6 +58,7 @@ func DefaultWispConfig() WispConfig {
 		SSTablePath:            defaultSSTablePath,
 		SSTableBlockSize:       defaultSSTableBlockSize,
 		MemTableFlushThreshold: defaultMemTableThreshold,
+		WALMaxSegmentSize:      defaultWALMaxSegmentSize,
 		SSTableList:            &sstable.SSTableList{},
 	}
 }
@@ -69,11 +76,14 @@ func CreateWispWithConfig(config WispConfig) (*Wisp, error) {
 	if config.MemTableFlushThreshold == 0 {
 		config.MemTableFlushThreshold = defaultMemTableThreshold
 	}
+	if config.WALMaxSegmentSize == 0 {
+		config.WALMaxSegmentSize = defaultWALMaxSegmentSize
+	}
 	if config.SSTableList == nil {
 		config.SSTableList = &sstable.SSTableList{}
 	}
 
-	walInstance, err := wal.CreateWAL(config.WALPath)
+	walInstance, err := wal.CreateWALWithSegmentSize(config.WALPath, config.WALMaxSegmentSize)
 	if err != nil {
 		return nil, err
 	}
@@ -157,15 +167,33 @@ func (w *Wisp) prepareMutableMemTableLocked() error {
 			}
 			w.mu.Lock()
 		} else {
-			w.mutableMemTable.Freeze()
-			w.immutableMemTable = w.mutableMemTable
-			mutableMemTable, err := memtable.CreateMemTableWithThreshold(w.config.MemTableFlushThreshold)
-			if err != nil {
+			if err := w.freezeMutableLocked(); err != nil {
 				return err
 			}
-			w.mutableMemTable = mutableMemTable
 		}
 	}
+	return nil
+}
+
+// freezeMutableLocked seals the mutable memtable and the WAL segments that
+// carry its records, then installs a fresh mutable memtable. Callers must hold
+// w.mu; appends are serialized by the same lock, so no record can land in the
+// sealed segment after the swap.
+func (w *Wisp) freezeMutableLocked() error {
+	w.mutableMemTable.Freeze()
+	w.immutableMemTable = w.mutableMemTable
+
+	sealed, err := w.wal.Rotate()
+	if err != nil {
+		return err
+	}
+	w.immutableWALSegment = sealed
+
+	mutableMemTable, err := memtable.CreateMemTableWithThreshold(w.config.MemTableFlushThreshold)
+	if err != nil {
+		return err
+	}
+	w.mutableMemTable = mutableMemTable
 	return nil
 }
 
@@ -247,16 +275,14 @@ func (w *Wisp) Flush() error {
 	w.mu.Lock()
 	imm := w.immutableMemTable
 	if imm == nil {
-		if w.mutableMemTable != nil && !w.mutableMemTable.IsFull() {
-			w.mutableMemTable.Freeze()
-			w.immutableMemTable = w.mutableMemTable
-			imm = w.immutableMemTable
-			mutableMemTable, err := memtable.CreateMemTableWithThreshold(w.config.MemTableFlushThreshold)
-			if err != nil {
+		// An empty memtable has nothing to flush; freezing it anyway would
+		// write an entry-less SSTable and burn a WAL segment on every Close.
+		if w.mutableMemTable != nil && w.mutableMemTable.Size() > 0 && !w.mutableMemTable.IsFull() {
+			if err := w.freezeMutableLocked(); err != nil {
 				w.mu.Unlock()
 				return err
 			}
-			w.mutableMemTable = mutableMemTable
+			imm = w.immutableMemTable
 		}
 	}
 	w.mu.Unlock()
@@ -273,6 +299,7 @@ func (w *Wisp) flushImmutable(imm *memtable.MemTable) error {
 
 	w.mu.RLock()
 	currentImm := w.immutableMemTable
+	sealedSegment := w.immutableWALSegment
 	w.mu.RUnlock()
 	if currentImm == nil || currentImm != imm {
 		return nil
@@ -321,14 +348,20 @@ func (w *Wisp) flushImmutable(imm *memtable.MemTable) error {
 
 	w.mu.Lock()
 	w.sstableWriter = nil
-	// if err := w.wal.Reset(); err != nil {
-	// 	w.mu.Unlock()
-	// 	return err
-	// }
 	if w.immutableMemTable == imm {
 		w.immutableMemTable = nil
 	}
+	walInstance := w.wal
 	w.mu.Unlock()
+
+	// Only now that the records are durable in an SSTable is it safe to drop
+	// the segments that carried them. Ordering matters: reclaiming earlier
+	// would lose data on a crash between the two steps.
+	if walInstance != nil && sealedSegment > 0 {
+		if err := walInstance.RemoveSegmentsUpTo(sealedSegment); err != nil {
+			return err
+		}
+	}
 
 	return nil
 }
