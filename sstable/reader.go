@@ -10,9 +10,10 @@ import (
 )
 
 type Reader struct {
-	file       *os.File
-	index      []IndexEntry
-	entryCount uint64
+	file        *os.File
+	index       []IndexEntry
+	entryCount  uint64
+	bloomFilter *BloomFilter
 }
 
 func OpenReader(path string) (*Reader, error) {
@@ -50,12 +51,46 @@ func (r *Reader) readFooter() error {
 	}
 	indexOffset := binary.LittleEndian.Uint64(footer[8:16])
 	indexSize := binary.LittleEndian.Uint64(footer[16:24])
-	r.entryCount = binary.LittleEndian.Uint64(footer[24:32])
-	checksum := binary.LittleEndian.Uint32(footer[32:36])
+	bloomOffset := binary.LittleEndian.Uint64(footer[24:32])
+	bloomSize := binary.LittleEndian.Uint64(footer[32:40])
+	r.entryCount = binary.LittleEndian.Uint64(footer[40:48])
+	checksum := binary.LittleEndian.Uint32(footer[48:52])
 	if err := r.readIndex(indexOffset, indexSize); err != nil {
 		return err
 	}
-	return r.verifyChecksum(indexOffset+indexSize, checksum)
+	if err := r.readBloomFilter(bloomOffset, bloomSize); err != nil {
+		return err
+	}
+	checksumSize := indexOffset + indexSize
+	if bloomSize > 0 {
+		checksumSize = bloomOffset + bloomSize
+	}
+	return r.verifyChecksum(checksumSize, checksum)
+}
+
+func (r *Reader) readBloomFilter(offset uint64, size uint64) error {
+	if size == 0 {
+		return nil
+	}
+	data := make([]byte, size)
+	if _, err := r.file.ReadAt(data, int64(offset)); err != nil {
+		return err
+	}
+	filter, err := DecodeBloomFilter(data)
+	if err != nil {
+		return err
+	}
+	r.bloomFilter = filter
+	return nil
+}
+
+// MayContain reports whether seriesID could be present in this SSTable.
+// A false result is definitive; a true result requires checking the data.
+func (r *Reader) MayContain(seriesID uint64) bool {
+	if r.bloomFilter == nil {
+		return true
+	}
+	return r.bloomFilter.MayContain(seriesID)
 }
 
 func (r *Reader) verifyChecksum(dataSize uint64, want uint32) error {
@@ -87,6 +122,9 @@ func (r *Reader) readIndex(offset uint64, size uint64) error {
 }
 
 func (r *Reader) Get(seriesID uint64, timestamp int64) ([]byte, bool,bool, 	 error) {
+	if !r.MayContain(seriesID) {
+		return nil, false, false, nil
+	}
 	block, found := r.findBlock(seriesID, timestamp)
 	if !found {
 		return nil, false,false, nil
