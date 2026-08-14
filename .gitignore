@@ -1,11 +1,32 @@
-# Local benchmark baseline (not committed, per-developer)
-.claude/benchmarks/
+# Go binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
 
-# Common dev/IDE files
-.DS_Store
-*.swp
-*.swo
-*~
+# Test binaries
+*.test
+
+# Coverage
+*.out
+coverage.out
+coverage.html
+
+# Go workspace
+go.work
+go.work.sum
+
+# IDE
 .vscode/
 .idea/
-*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# WispDB runtime data
+*.log
+*.wal
+*.sst
+*.db
