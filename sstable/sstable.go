@@ -34,4 +34,6 @@ type Footer struct {
 	IndexSize   uint64
 	EntryCount  uint64
 	Checksum    uint32
+	BloomOffset uint64
+	BloomSize   uint64
 }
