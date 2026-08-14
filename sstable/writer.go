@@ -95,7 +95,7 @@ func (w *Writer) writeBloomFilter() (uint64,uint64,error) {
 		return 0,0,nil
 	}
 
-	n, err := w.out.Write(w.bloomFilter.Bits)
+	n, err := w.out.Write(w.bloomFilter.Encode())
 	if err != nil {
 		return 0,0,err
 	}

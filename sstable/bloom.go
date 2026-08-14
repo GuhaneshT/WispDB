@@ -2,6 +2,7 @@ package sstable
 
 import (
 	"encoding/binary"
+	"fmt"
 	"math"
 
 	"github.com/twmb/murmur3"
@@ -71,6 +72,26 @@ func (b *BloomFilter) Add(key uint64) {
 
 		b.Bits[byteIndex] |= 1 << bitIndex
 	}
+}
+
+// Encode serializes the filter as NumBits(8) | NumHashes(4) | Bits.
+func (b *BloomFilter) Encode() []byte {
+	buf := make([]byte, 12+len(b.Bits))
+	binary.LittleEndian.PutUint64(buf[0:8], b.NumBits)
+	binary.LittleEndian.PutUint32(buf[8:12], b.NumHashes)
+	copy(buf[12:], b.Bits)
+	return buf
+}
+
+// DecodeBloomFilter parses the format written by Encode.
+func DecodeBloomFilter(data []byte) (*BloomFilter, error) {
+	if len(data) < 12 {
+		return nil, fmt.Errorf("corrupt bloom filter")
+	}
+	numBits := binary.LittleEndian.Uint64(data[0:8])
+	numHashes := binary.LittleEndian.Uint32(data[8:12])
+	bits := append([]byte(nil), data[12:]...)
+	return &BloomFilter{Bits: bits, NumBits: numBits, NumHashes: numHashes}, nil
 }
 
 func (b *BloomFilter) MayContain(key uint64) bool {
