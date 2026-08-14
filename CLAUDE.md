@@ -55,7 +55,7 @@ Any caller of `GetTables()` **must** pair it with `defer sstable.ReleaseTables(t
 
 ## Known in-progress state
 
-- **WAL is never truncated.** The `w.wal.Reset()` call in `flushImmutable` is commented out pending WAL segmentation. Consequence: the log grows without bound and `Recover()` replays every record ever written, re-populating the memtable with data already in SSTables. Don't re-enable it without segmentation — the commit history records this as a deliberate revert.
+- **WAL segmentation is implemented.** The WAL is split into generation-numbered segments (`wal/wal.go`); `freezeMutableLocked` calls `w.wal.Rotate()` to seal the segment carrying the about-to-be-frozen memtable and records the sealed id in `w.immutableWALSegment`. Once `flushImmutable` has durably written that memtable to an SSTable, it calls `walInstance.RemoveSegmentsUpTo(sealedSegment)` to reclaim the now-redundant segments. Ordering matters: truncation only happens *after* the SSTable write succeeds, so a crash between the two steps never loses data. `Recover()` still replays every remaining segment, but that's now bounded by segments not yet flushed, not the whole history.
 - `sstable.SSTable` (in `sstable.go`) is a leftover type; the live path uses `SSTableFile` + `Reader`.
 - The codebase intentionally carries no explanatory comments in most files; commented-out debug `fmt.Printf` blocks in `reader.go` and `compact.go` are historical debugging aids.
 
