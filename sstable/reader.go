@@ -6,6 +6,7 @@ import (
 	"hash/crc32"
 	"io"
 	"os"
+	"sort"
 )
 
 type Reader struct {
@@ -146,22 +147,25 @@ func (r *Reader) Close() error {
 	return r.file.Close()
 }
 
+// findBlock returns the last block whose first key is <= (seriesID,
+// timestamp) — the only block that could contain the target entry, since
+// each index entry is keyed on its block's first entry and the index is
+// sorted ascending by construction (blocks are written in key order).
 func (r *Reader) findBlock(seriesID uint64, timestamp int64) (IndexEntry, bool) {
 	if len(r.index) == 0 {
 		return IndexEntry{}, false
 	}
 	target := Entry{SeriesID: seriesID, Timestamp: timestamp}
-	candidate := -1
-	for i, entry := range r.index {
-		if compareEntries(Entry{SeriesID: entry.SeriesID, Timestamp: entry.Timestamp}, target) > 0 {
-			break
-		}
-		candidate = i
-	}
-	if candidate == -1 {
+	// i is the first index entry strictly greater than target; the
+	// candidate block, if any, is the one just before it.
+	i := sort.Search(len(r.index), func(i int) bool {
+		entry := r.index[i]
+		return compareEntries(Entry{SeriesID: entry.SeriesID, Timestamp: entry.Timestamp}, target) > 0
+	})
+	if i == 0 {
 		return IndexEntry{}, false
 	}
-	return r.index[candidate], true
+	return r.index[i-1], true
 }
 
 func (r *Reader) readBlock(indexEntry IndexEntry) ([]Entry, error) {

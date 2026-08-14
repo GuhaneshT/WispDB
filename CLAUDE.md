@@ -40,7 +40,7 @@ Layout: 12-byte header (magic `0x57495350` = "WISP", version, blockSize, 3 reser
 
 - Block entry encoding (`block.go` / `reader.readBlock`): `entryLength(4) | seriesID(8) | timestamp(8) | deleted(1) | valueLength(4) | value`. Encoder and decoder are hand-rolled in separate files — changing one requires changing the other, plus `entryEncodedSize`.
 - Index entry: fixed 28 bytes (`seriesID, timestamp, offset, size`), one per block, keyed on the block's first entry. `readIndex` rejects any index whose size isn't a multiple of 28.
-- `Reader.findBlock` is a linear scan over the index, not a binary search.
+- `Reader.findBlock` binary-searches the index (`sort.Search`) for the last entry whose key is `<=` the target, relying on the index being sorted ascending by construction.
 
 ### SSTable lifecycle (`sstable/sstable_list.go`)
 
@@ -56,11 +56,15 @@ Any caller of `GetTables()` **must** pair it with `defer sstable.ReleaseTables(t
 
 `CompactSSTables` does a k-way merge via a min-heap over per-SSTable iterators. The heap's `Less` tie-breaks equal `(seriesID, timestamp)` by **higher generation first**, so the newest version of a key pops first and later duplicates are skipped. `IsMajor` controls tombstone handling: major compaction drops tombstones entirely, minor compaction preserves them (an older SSTable may still hold the shadowed value). If the merge produces zero output entries the output file is removed and `nil` is returned — never leave a headers-and-footer-only SSTable on disk. `ReplaceTables` swaps the merged file in and marks the inputs `unlinked`.
 
+`Compactor.CompactRange` is currently dead code — defined but never called (`CompactAll` is the only live entry point) and has no test coverage. `heapItem.sstableIdx` is likewise stored but never read.
+
 ## Recent optimizations
 
 **Allocation elimination (WAL + SSTable block encoding):** `binary.Write`/`binary.Read` (which box each field into `interface{}`, causing heap allocations) have been replaced with manual `binary.LittleEndian.PutUintXX`/`UintXX` calls. `wal/wal.go`'s `AppendRecord` now encodes into a `sync.Pool`-backed buffer (safe for concurrent callers); `sstable/block.go`'s `Block.Encode` writes into a Writer-held scratch buffer (single-owner path). Wire format unchanged. Benchmarks in `wal/wal_bench_test.go` and `sstable/block_bench_test.go` can be tracked with `scripts/bench-compare.ps1`.
 
 **SSTable checksum validation:** The footer's `Checksum` field now holds a real CRC32 (IEEE) over the data+index, computed incrementally during write and verified on open. Mismatches fail `OpenReader` cleanly (like invalid magic/version), preventing silent corruption from going undetected.
+
+**`Reader.findBlock` binary search:** Replaced the O(n) linear scan over the index with `sort.Search` (O(log n)), relying on the index being sorted ascending by construction. Same "last block whose first key is `<=` target" semantics, just faster as SSTables accumulate more blocks.
 
 ## Known in-progress state
 

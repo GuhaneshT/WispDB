@@ -162,6 +162,69 @@ func TestWriterReaderRoundTrip(t *testing.T) {
 	}
 }
 
+func TestFindBlockBoundaries(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "data.sst")
+
+	writer, err := NewWriter(path, 32)
+	if err != nil {
+		t.Fatalf("NewWriter() error = %v", err)
+	}
+	// Small block size forces one entry per block, giving a multi-entry index
+	// to binary-search over.
+	entries := []Entry{
+		{SeriesID: 1, Timestamp: 10, Value: []byte("a")},
+		{SeriesID: 2, Timestamp: 20, Value: []byte("b")},
+		{SeriesID: 3, Timestamp: 30, Value: []byte("c")},
+		{SeriesID: 4, Timestamp: 40, Value: []byte("d")},
+	}
+	for _, entry := range entries {
+		if err := writer.Add(entry); err != nil {
+			t.Fatalf("Add() error = %v", err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	reader, err := OpenReader(path)
+	if err != nil {
+		t.Fatalf("OpenReader() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := reader.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+	if len(reader.index) < 2 {
+		t.Fatalf("expected multiple index blocks, got %d", len(reader.index))
+	}
+
+	// Before the first block's key entirely.
+	if _, found := reader.findBlock(0, 0); found {
+		t.Fatal("findBlock() found a block before the first key, want false")
+	}
+	// Exact match on the first block's key.
+	if block, found := reader.findBlock(1, 10); !found || block.SeriesID != 1 {
+		t.Fatalf("findBlock(1, 10) = %+v, %v, want first block", block, found)
+	}
+	// Exact match on the last block's key.
+	if block, found := reader.findBlock(4, 40); !found || block.SeriesID != 4 {
+		t.Fatalf("findBlock(4, 40) = %+v, %v, want last block", block, found)
+	}
+	// Past the last block's key entirely — still lands on the last block,
+	// which Get()'s subsequent entry scan then correctly reports as absent.
+	if block, found := reader.findBlock(99, 99); !found || block.SeriesID != 4 {
+		t.Fatalf("findBlock(99, 99) = %+v, %v, want last block", block, found)
+	}
+
+	for _, want := range entries {
+		got, found, _, err := reader.Get(want.SeriesID, want.Timestamp)
+		if err != nil || !found || !bytes.Equal(got, want.Value) {
+			t.Fatalf("Get(%d, %d) = %q, %v, %v, want %q, true, nil", want.SeriesID, want.Timestamp, got, found, err, want.Value)
+		}
+	}
+}
+
 func TestWriterReaderTombstoneRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "data.sst")
 

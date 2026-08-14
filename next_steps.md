@@ -1,0 +1,18 @@
+Priority 1: Bloom filters per SSTable
+The problem: Right now, Wisp.Get (main/wisp.go) walks every SSTable newest-to-oldest until it finds the key or exhausts the list. For a key that doesn't exist (or only exists in an old generation), that's a full disk read + binary-search-and-block-decode per SSTable — and this gets worse the longer the engine runs and the more generations accumulate between compactions.
+
+The fix: Add a Bloom filter per SSTable, built during Writer flush/compaction and stored in the file (or alongside it), checked before doing any disk I/O for that table. A negative Bloom check lets Get skip the table entirely — no ReadAt, no block decode, no CRC verification.
+
+Priority 2: Targeted block decode (stop allocating the whole block on every Get)
+The problem: Reader.readBlock (sstable/reader.go) decodes every entry in a block into a freshly allocated []Entry, and each entry's Value gets its own append([]byte(nil), data[valueStart:valueEnd]...) copy — even though Get only wants the one entry matching (seriesID, timestamp). For a block holding 32 entries, a single point lookup allocates 32 Entry structs and up to 32 value-copy slices just to find one.
+
+The fix: Add a Reader.findEntryInBlock(indexEntry, seriesID, timestamp) ([]byte, bool, bool, error) that walks the raw block bytes the same way readBlock does now, but returns as soon as it hits a matching key — allocating exactly one value copy (or zero, on a miss) instead of decoding the whole block. Keep readBlock itself for callers that genuinely need every entry (e.g. compaction's Iterator, if it goes through the same path — worth checking), and have Get call the new targeted version instead.
+
+Why this ranks above the write-path item below: it's the most direct continuation of the WAL/block-encoding allocation work already done this session — same category of fix (stop materializing more than you need), same file family (sstable/), low risk (pure read-path, no format change), and it compounds with the Bloom filter: once a table passes the Bloom check, this makes the actual read cheap too.
+
+Priority 3: WAL group commit (batch fsyncs across concurrent writers)
+The problem: WAL.AppendRecord (wal/wal.go) calls w.file.Sync() synchronously on every single record, while holding w.mu. Under concurrent writers, each one serializes behind the previous writer's fsync — and fsync is typically the slowest operation in the whole write path (real disk flush, not just an OS buffer write). This is a correctness-safe design (CLAUDE.md documents it as intentional: "append to WAL (fsync per record)"), but it caps write throughput at roughly 1 / fsync_latency regardless of CPU or how many goroutines are writing.
+
+The fix: Classic group-commit pattern — instead of each AppendRecord call fsyncing for itself, batch: writers append their record to the buffer and enqueue a "waiting for durability" signal; one goroutine (or the last writer to arrive in a short window) performs a single Sync() covering everyone's appended bytes, then wakes all waiters. This trades a small, bounded latency window (batch collection time, typically sub-millisecond to a few ms) for dramatically higher throughput under concurrent load — the same technique RocksDB/LevelDB/Postgres use.
+
+Why this ranks below the block-decode item: it's a bigger structural change (touches locking/signaling design in WAL, not just a self-contained function), has real durability-window tradeoffs the user should consciously choose (batch window size, whether callers can opt out), and only pays off under concurrent write load — whereas the Bloom filter and block-decode fixes help every workload, single- or multi-threaded.
