@@ -2,7 +2,6 @@ package wal
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -27,64 +26,71 @@ const (
 	DefaultMaxSegmentSize uint64 = 4 * 1024 * 1024
 	recordHeaderSize             = 8
 	maxRecordSize         uint64 = 64 << 20
+	// payloadHeaderSize is the fixed-width prefix of the v2 payload layout:
+	// timestamp(8) + deleted flag(1) + value length(4) + seriesID(8).
+	payloadHeaderSize = 8 + 1 + 4 + 8
 )
 
-// payload design v2: timestamp + deleted flag + value length + key + value
-func serializePayload(record WALRecord) ([]byte, error) {
-	buf := new(bytes.Buffer)
-	err := binary.Write(buf, binary.LittleEndian, record.Timestamp)
-	if err != nil {
-		return nil, err
-	}
-	var deleted uint8
-	if record.Deleted {
-		deleted = 1
-	}
-	if err := binary.Write(buf, binary.LittleEndian, deleted); err != nil {
-		return nil, err
-	}
-	err = binary.Write(buf, binary.LittleEndian, uint32(len(record.Value)))
-	if err != nil {
-		return nil, err
-	}
-	err = binary.Write(buf, binary.LittleEndian, record.SeriesID)
-	if err != nil {
-		return nil, err
-	}
-	buf.Write([]byte(record.Value))
-	return buf.Bytes(), nil
+// payloadEncodedSize returns the exact on-disk size of record's v2 payload.
+func payloadEncodedSize(record WALRecord) int {
+	return payloadHeaderSize + len(record.Value)
 }
 
-// desialize payload into WALRecord
+// encodePayload writes record into dst using the v2 payload layout —
+// timestamp + deleted flag + value length + seriesID + value — via plain
+// PutUintXX calls. dst must be exactly payloadEncodedSize(record) bytes long.
+//
+// This replaces binary.Write, which took each field through interface{}:
+// boxing a scalar (int64, uint64, uint32...) into interface{} allocates on
+// the heap because the value doesn't fit in an interface's single pointer
+// word, and binary.Write's fast path additionally allocates its own
+// per-call scratch slice on top of that. Four fields meant up to ~8
+// allocations per record before even touching bytes.Buffer's own growth
+// allocations — measured as the top alloc_objects contributor on this path.
+// Writing straight into a caller-supplied (and, on the AppendRecord hot
+// path, pooled) slice needs none of that.
+func encodePayload(dst []byte, record WALRecord) {
+	binary.LittleEndian.PutUint64(dst[0:8], uint64(record.Timestamp))
+	if record.Deleted {
+		dst[8] = 1
+	} else {
+		dst[8] = 0
+	}
+	binary.LittleEndian.PutUint32(dst[9:13], uint32(len(record.Value)))
+	binary.LittleEndian.PutUint64(dst[13:21], record.SeriesID)
+	copy(dst[21:], record.Value)
+}
+
+// serializePayload is a non-hot-path convenience wrapper around encodePayload
+// for callers (tests, legacy-format fixtures) that just want an owned
+// payload slice. AppendRecord bypasses this and encodes straight into a
+// pooled record buffer instead, since it's the path allocation profiling
+// flagged.
+func serializePayload(record WALRecord) ([]byte, error) {
+	buf := make([]byte, payloadEncodedSize(record))
+	encodePayload(buf, record)
+	return buf, nil
+}
+
+// deserializePayload mirrors encodePayload's layout exactly, reading fields
+// with UintXX instead of binary.Read.
 func deserializePayload(data []byte) (WALRecord, error) {
-	buf := bytes.NewReader(data)
-	var timestamp int64
-	var deleted uint8
-	var valueLen uint32
-	err := binary.Read(buf, binary.LittleEndian, &timestamp)
-	if err != nil {
-		return WALRecord{}, err
+	if len(data) < payloadHeaderSize {
+		return WALRecord{}, fmt.Errorf("wal payload too short: %d bytes, want at least %d", len(data), payloadHeaderSize)
 	}
-	err = binary.Read(buf, binary.LittleEndian, &deleted)
-	if err != nil {
-		return WALRecord{}, err
+	timestamp := int64(binary.LittleEndian.Uint64(data[0:8]))
+	deleted := data[8] != 0
+	valueLen := binary.LittleEndian.Uint32(data[9:13])
+	seriesID := binary.LittleEndian.Uint64(data[13:21])
+
+	valueEnd := payloadHeaderSize + int(valueLen)
+	if valueEnd > len(data) {
+		return WALRecord{}, fmt.Errorf("wal payload truncated: want %d value bytes, have %d", valueLen, len(data)-payloadHeaderSize)
 	}
-	err = binary.Read(buf, binary.LittleEndian, &valueLen)
-	if err != nil {
-		return WALRecord{}, err
-	}
-	seriesIdBytes := make([]byte, 8)
-	_, err = io.ReadFull(buf, seriesIdBytes) // read seriesID
-	if err != nil {
-		return WALRecord{}, err
-	}
-	seriesId := binary.LittleEndian.Uint64(seriesIdBytes)
-	valueBytes := make([]byte, valueLen)
-	_, err = io.ReadFull(buf, valueBytes)
-	if err != nil {
-		return WALRecord{}, err
-	}
-	return WALRecord{Timestamp: timestamp, SeriesID: seriesId, Deleted: deleted != 0, Value: valueBytes}, nil
+	value := make([]byte, valueLen)
+	copy(value, data[payloadHeaderSize:valueEnd])
+
+	return WALRecord{Timestamp: timestamp, SeriesID: seriesID, Deleted: deleted, Value: value}, nil
 }
 
 // putRecordHeader writes the on-disk record framing (crc32 of the payload
@@ -200,12 +206,32 @@ func (w *WAL) openSegment(id uint64) error {
 	return nil
 }
 
+// recordBufPool holds reusable record-framing buffers (header + payload) for
+// AppendRecord. AppendRecord builds this buffer before acquiring w.mu, so
+// concurrent callers can be encoding at the same time; a sync.Pool gives each
+// of them its own buffer to reuse without needing a lock of its own (unlike a
+// single struct-held buffer, which would either race or require one).
+var recordBufPool = sync.Pool{
+	New: func() any {
+		buf := make([]byte, 0, 256)
+		return &buf
+	},
+}
+
 // Append record to the active WAL segment, rotating first if it would overflow.
 func (w *WAL) AppendRecord(record WALRecord) error {
-	payload, err := serializePayload(record)
-	if err != nil {
-		return err
+	recordSize := recordHeaderSize + payloadEncodedSize(record)
+
+	bufPtr := recordBufPool.Get().(*[]byte)
+	defer recordBufPool.Put(bufPtr)
+	buf := *bufPtr
+	if cap(buf) < recordSize {
+		buf = make([]byte, recordSize)
 	}
+	buf = buf[:recordSize]
+	encodePayload(buf[recordHeaderSize:], record)
+	putRecordHeader(buf, buf[recordHeaderSize:])
+	*bufPtr = buf
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -214,18 +240,13 @@ func (w *WAL) AppendRecord(record WALRecord) error {
 		return fmt.Errorf("wal is closed")
 	}
 
-	recordSize := uint64(recordHeaderSize + len(payload))
 	// size > 0 keeps a single oversized record from rotating forever; it gets
 	// a segment to itself instead.
-	if w.size > 0 && w.size+recordSize > w.maxSegmentSize {
+	if w.size > 0 && w.size+uint64(recordSize) > w.maxSegmentSize {
 		if _, err := w.rotateLocked(); err != nil {
 			return err
 		}
 	}
-
-	buf := make([]byte, recordSize)
-	putRecordHeader(buf, payload)
-	copy(buf[recordHeaderSize:], payload)
 
 	n, err := w.file.Write(buf)
 	w.size += uint64(n)

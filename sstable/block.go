@@ -1,7 +1,6 @@
 package sstable
 
 import (
-	"bytes"
 	"encoding/binary"
 )
 
@@ -19,33 +18,46 @@ func entryEncodedSize(entry Entry) uint32 {
 	return uint32(4 + 8 + 8 + 1 + 4 + len(entry.Value))
 }
 
-func (b *Block) Encode() ([]byte, error) {
-	var buf bytes.Buffer
-	for _, entry := range b.Entries {
-		entryLength := uint32(8 + 8 + 1 + 4 + len(entry.Value))
-		if err := binary.Write(&buf, binary.LittleEndian, entryLength); err != nil {
-			return nil, err
-		}
-		if err := binary.Write(&buf, binary.LittleEndian, entry.SeriesID); err != nil {
-			return nil, err
-		}
-		if err := binary.Write(&buf, binary.LittleEndian, entry.Timestamp); err != nil {
-			return nil, err
-		}
-		var deleted uint8
-		if entry.Deleted {
-			deleted = 1
-		}
-		if err := binary.Write(&buf, binary.LittleEndian, deleted); err != nil {
-			return nil, err
-		}
-		valueLength := uint32(len(entry.Value))
-		if err := binary.Write(&buf, binary.LittleEndian, valueLength); err != nil {
-			return nil, err
-		}
-		if _, err := buf.Write(entry.Value); err != nil {
-			return nil, err
-		}
+// encodeEntry writes entry into dst using the block-entry layout —
+// entryLength + seriesID + timestamp + deleted flag + valueLength + value —
+// via plain PutUintXX calls instead of binary.Write, which boxes each scalar
+// field into an interface{} (a heap allocation) and allocates its own
+// per-call scratch slice on top of that. dst must be exactly
+// entryEncodedSize(entry) bytes long.
+func encodeEntry(dst []byte, entry Entry) {
+	binary.LittleEndian.PutUint32(dst[0:4], uint32(len(dst))-4)
+	binary.LittleEndian.PutUint64(dst[4:12], entry.SeriesID)
+	binary.LittleEndian.PutUint64(dst[12:20], uint64(entry.Timestamp))
+	if entry.Deleted {
+		dst[20] = 1
+	} else {
+		dst[20] = 0
 	}
-	return buf.Bytes(), nil
+	binary.LittleEndian.PutUint32(dst[21:25], uint32(len(entry.Value)))
+	copy(dst[25:], entry.Value)
+}
+
+// Encode serializes the block's entries into *scratch, growing or reusing it
+// as needed, and returns the result sized to exactly b.Size.
+//
+// Unlike the WAL's AppendRecord (which encodes concurrently, before a lock,
+// and needs a sync.Pool), a Block and its owning Writer are single-owner and
+// used strictly sequentially within one flush or compaction — so the caller
+// (Writer) can just hold one scratch buffer across every block it writes,
+// with no pooling required.
+func (b *Block) Encode(scratch *[]byte) []byte {
+	buf := *scratch
+	if cap(buf) < int(b.Size) {
+		buf = make([]byte, b.Size)
+	} else {
+		buf = buf[:b.Size]
+	}
+	var offset uint32
+	for _, entry := range b.Entries {
+		size := entryEncodedSize(entry)
+		encodeEntry(buf[offset:offset+size], entry)
+		offset += size
+	}
+	*scratch = buf
+	return buf
 }

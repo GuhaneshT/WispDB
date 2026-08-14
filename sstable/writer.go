@@ -14,6 +14,7 @@ type Writer struct {
 	hash      hash.Hash32
 	blockSize uint32
 	currentBlock *Block
+	blockBuf     []byte
 	index        []IndexEntry
 	entryCount uint64
 	offset      uint64
@@ -64,10 +65,7 @@ func (w *Writer) flushBlock() error {
 	if len(w.currentBlock.Entries) == 0 {
 		return nil
 	}
-	data, err := w.currentBlock.Encode()
-	if err != nil {
-		return err
-	}
+	data := w.currentBlock.Encode(&w.blockBuf)
 	offset := w.offset
 	n, err := w.out.Write(data)
 	if err != nil {
