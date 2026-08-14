@@ -15,7 +15,10 @@ go test ./...                       # all packages
 go test ./sstable/ -run TestWriterReaderRoundTrip -v   # single test
 go test ./main/ -race -v            # concurrency test needs -race to be meaningful
 go vet ./...                        # main build check (see below)
+.\scripts\bench-compare.ps1         # run tests + benchmarks, compare to prior baseline
 ```
+
+**Benchmarking:** `bench-compare.ps1` runs the full test suite, collects benchmarks from all packages, and compares ns/op (CPU), B/op (memory), and allocs/op against the previous run. Baseline stored locally at `.claude/benchmarks/baseline.json` (not committed). First run establishes the baseline; subsequent runs show % deltas.
 
 `go build ./...` **fails by design**: `main/` is `package main` but declares no `func main()`. It is a library package that only compiles under `go test` / `go vet`. Don't "fix" this by adding a `main()` unless a CLI is actually being introduced.
 
@@ -52,6 +55,12 @@ Any caller of `GetTables()` **must** pair it with `defer sstable.ReleaseTables(t
 ### Compaction (`compactor/`)
 
 `CompactSSTables` does a k-way merge via a min-heap over per-SSTable iterators. The heap's `Less` tie-breaks equal `(seriesID, timestamp)` by **higher generation first**, so the newest version of a key pops first and later duplicates are skipped. `IsMajor` controls tombstone handling: major compaction drops tombstones entirely, minor compaction preserves them (an older SSTable may still hold the shadowed value). If the merge produces zero output entries the output file is removed and `nil` is returned — never leave a headers-and-footer-only SSTable on disk. `ReplaceTables` swaps the merged file in and marks the inputs `unlinked`.
+
+## Recent optimizations
+
+**Allocation elimination (WAL + SSTable block encoding):** `binary.Write`/`binary.Read` (which box each field into `interface{}`, causing heap allocations) have been replaced with manual `binary.LittleEndian.PutUintXX`/`UintXX` calls. `wal/wal.go`'s `AppendRecord` now encodes into a `sync.Pool`-backed buffer (safe for concurrent callers); `sstable/block.go`'s `Block.Encode` writes into a Writer-held scratch buffer (single-owner path). Wire format unchanged. Benchmarks in `wal/wal_bench_test.go` and `sstable/block_bench_test.go` can be tracked with `scripts/bench-compare.ps1`.
+
+**SSTable checksum validation:** The footer's `Checksum` field now holds a real CRC32 (IEEE) over the data+index, computed incrementally during write and verified on open. Mismatches fail `OpenReader` cleanly (like invalid magic/version), preventing silent corruption from going undetected.
 
 ## Known in-progress state
 

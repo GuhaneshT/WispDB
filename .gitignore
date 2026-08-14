@@ -1,0 +1,11 @@
+# Local benchmark baseline (not committed, per-developer)
+.claude/benchmarks/
+
+# Common dev/IDE files
+.DS_Store
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+*.iml
