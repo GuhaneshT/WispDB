@@ -162,6 +162,34 @@ func TestWriterReaderRoundTrip(t *testing.T) {
 	}
 }
 
+func TestWriterReaderBloomFilter(t *testing.T) {
+	path := writeValidSSTable(t)
+
+	reader, err := OpenReader(path)
+	if err != nil {
+		t.Fatalf("OpenReader() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := reader.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	if reader.bloomFilter == nil {
+		t.Fatal("reader did not load a bloom filter")
+	}
+	for _, seriesID := range []uint64{1, 2} {
+		if !reader.MayContain(seriesID) {
+			t.Errorf("MayContain(%d) = false, want true for inserted series", seriesID)
+		}
+	}
+	if reader.MayContain(999) {
+		// Not a hard guarantee (false positives are allowed), but with
+		// this few keys and this filter size it should not occur.
+		t.Error("MayContain(999) = true for a series never inserted")
+	}
+}
+
 func TestFindBlockBoundaries(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "data.sst")
 

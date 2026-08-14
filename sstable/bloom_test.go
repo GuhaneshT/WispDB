@@ -1,6 +1,7 @@
 package sstable
 
 import (
+	"bytes"
 	"testing"
 )
 
@@ -123,6 +124,31 @@ func TestBloomFilterFalsePositiveRate(t *testing.T) {
 			actualRate,
 			maxAllowedRate,
 		)
+	}
+}
+
+func TestBloomFilterEncodeDecodeRoundTrip(t *testing.T) {
+	bloom := NewBloomFilter(100, 0.01)
+	keys := []uint64{1, 2, 3, 42, 100000}
+	for _, key := range keys {
+		bloom.Add(key)
+	}
+
+	decoded, err := DecodeBloomFilter(bloom.Encode())
+	if err != nil {
+		t.Fatalf("DecodeBloomFilter() error = %v", err)
+	}
+
+	if decoded.NumBits != bloom.NumBits || decoded.NumHashes != bloom.NumHashes {
+		t.Errorf("decoded params = (%d, %d), want (%d, %d)", decoded.NumBits, decoded.NumHashes, bloom.NumBits, bloom.NumHashes)
+	}
+	if !bytes.Equal(decoded.Bits, bloom.Bits) {
+		t.Error("decoded bits do not match original")
+	}
+	for _, key := range keys {
+		if !decoded.MayContain(key) {
+			t.Errorf("decoded filter returned false for inserted key %d", key)
+		}
 	}
 }
 
