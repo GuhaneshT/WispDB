@@ -2,11 +2,16 @@ package sstable
 
 import (
 	"encoding/binary"
+	"hash"
+	"hash/crc32"
+	"io"
 	"os"
 )
 
 type Writer struct {
 	file      *os.File
+	out       io.Writer
+	hash      hash.Hash32
 	blockSize uint32
 	currentBlock *Block
 	index        []IndexEntry
@@ -19,7 +24,8 @@ func NewWriter(path string, blockSize uint32) (*Writer, error) {
 	if err != nil {
 		return nil, err
 	}
-	writer := &Writer{file: file, blockSize: blockSize, currentBlock: &Block{}, offset: 0}
+	checksum := crc32.NewIEEE()
+	writer := &Writer{file: file, out: io.MultiWriter(file, checksum), hash: checksum, blockSize: blockSize, currentBlock: &Block{}, offset: 0}
 	if err := writer.writeHeader(); err != nil {
 		file.Close()
 		return nil, err
@@ -33,7 +39,7 @@ func (w *Writer) writeHeader() error {
 	header[4] = Version
 	binary.LittleEndian.PutUint32(header[5:9], w.blockSize)
 	// bytes 9-11 reserved
-	n, err := w.file.Write(header)
+	n, err := w.out.Write(header)
 	if err != nil {
 		return err
 	}
@@ -63,7 +69,7 @@ func (w *Writer) flushBlock() error {
 		return err
 	}
 	offset := w.offset
-	n, err := w.file.Write(data)
+	n, err := w.out.Write(data)
 	if err != nil {
 		return err
 	}
@@ -85,7 +91,7 @@ func (w *Writer) writeIndex() (uint64, uint64, error) {
 		binary.LittleEndian.PutUint32(record[24:28], entry.Size)
 		buf = append(buf, record...)
 	}
-	n, err := w.file.Write(buf)
+	n, err := w.out.Write(buf)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -100,8 +106,7 @@ func (w *Writer) writeFooter(indexOffset uint64, indexSize uint64) error {
 	binary.LittleEndian.PutUint64(footer[8:16], indexOffset)
 	binary.LittleEndian.PutUint64(footer[16:24], indexSize)
 	binary.LittleEndian.PutUint64(footer[24:32], w.entryCount)
-	// checksum currently zero.
-	// We'll implement CRC validation after the basic reader works.
+	binary.LittleEndian.PutUint32(footer[32:36], w.hash.Sum32())
 	n, err := w.file.Write(footer)
 	if err != nil {
 		return err

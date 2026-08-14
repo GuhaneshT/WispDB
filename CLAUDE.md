@@ -33,7 +33,7 @@ Layering, bottom-up: `skiplist` → `memtable` → `wal` + `sstable` → `compac
 
 ### SSTable format (`sstable/`)
 
-Layout: 12-byte header (magic `0x57495350` = "WISP", version, blockSize, 3 reserved bytes) → data blocks → index → 36-byte footer. The footer's `Checksum` field is written as zero — CRC validation is not implemented. Only the WAL currently checksums (crc32 per record, verified on replay).
+Layout: 12-byte header (magic `0x57495350` = "WISP", version, blockSize, 3 reserved bytes) → data blocks → index → 36-byte footer. The footer's `Checksum` field is a CRC32 (IEEE, `hash/crc32`) over everything before the footer (header + blocks + index), computed incrementally in `Writer` via an `io.MultiWriter` and verified in `Reader.readFooter` after the index loads; a mismatch fails `OpenReader` the same way an invalid magic/version does.
 
 - Block entry encoding (`block.go` / `reader.readBlock`): `entryLength(4) | seriesID(8) | timestamp(8) | deleted(1) | valueLength(4) | value`. Encoder and decoder are hand-rolled in separate files — changing one requires changing the other, plus `entryEncodedSize`.
 - Index entry: fixed 28 bytes (`seriesID, timestamp, offset, size`), one per block, keyed on the block's first entry. `readIndex` rejects any index whose size isn't a multiple of 28.

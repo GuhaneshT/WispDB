@@ -3,6 +3,8 @@ package sstable
 import (
 	"encoding/binary"
 	"fmt"
+	"hash/crc32"
+	"io"
 	"os"
 )
 
@@ -48,7 +50,22 @@ func (r *Reader) readFooter() error {
 	indexOffset := binary.LittleEndian.Uint64(footer[8:16])
 	indexSize := binary.LittleEndian.Uint64(footer[16:24])
 	r.entryCount = binary.LittleEndian.Uint64(footer[24:32])
-	return r.readIndex(indexOffset, indexSize)
+	checksum := binary.LittleEndian.Uint32(footer[32:36])
+	if err := r.readIndex(indexOffset, indexSize); err != nil {
+		return err
+	}
+	return r.verifyChecksum(indexOffset+indexSize, checksum)
+}
+
+func (r *Reader) verifyChecksum(dataSize uint64, want uint32) error {
+	h := crc32.NewIEEE()
+	if _, err := io.Copy(h, io.NewSectionReader(r.file, 0, int64(dataSize))); err != nil {
+		return err
+	}
+	if got := h.Sum32(); got != want {
+		return fmt.Errorf("sstable checksum mismatch: got %d, want %d", got, want)
+	}
+	return nil
 }
 
 func (r *Reader) readIndex(offset uint64, size uint64) error {
