@@ -1,13 +1,16 @@
 package sstable
 
 import (
+	"encoding/binary"
 	"math"
 
 	"github.com/twmb/murmur3"
 )
 
-func hashfunc(key []byte) (uint64, uint64) {
-	return murmur3.Sum128(key)
+func hashfunc(key uint64) (uint64, uint64) {
+	var buf [8]byte
+	binary.LittleEndian.PutUint64(buf[:], key)
+	return murmur3.Sum128(buf[:])
 }
 
 type BloomFilter struct {
@@ -58,7 +61,7 @@ func NewBloomFilter(expectedKeys uint64, falsePositiveRate float64) *BloomFilter
 	}
 }
 
-func (b *BloomFilter) Add(key []byte) {
+func (b *BloomFilter) Add(key uint64) {
 	h1,h2 := hashfunc(key)
 	for i := uint32(0); i < b.NumHashes; i++ {
 		position := (h1 + uint64(i)*h2) % b.NumBits
@@ -70,7 +73,7 @@ func (b *BloomFilter) Add(key []byte) {
 	}
 }
 
-func (b *BloomFilter) MayContain(key []byte) bool {
+func (b *BloomFilter) MayContain(key uint64) bool {
 	if b == nil || b.NumBits == 0 || b.NumHashes == 0 {
 		return false
 	}

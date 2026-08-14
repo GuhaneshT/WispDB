@@ -18,13 +18,15 @@ type Writer struct {
 	index        []IndexEntry
 	entryCount uint64
 	offset      uint64
+	bloomFilter *BloomFilter
+	bloomKeys []uint64
 }
 
 func NewWriter(path string, blockSize uint32) (*Writer, error) {
 	file, err := os.Create(path)
 	if err != nil {
 		return nil, err
-	}
+	} 
 	checksum := crc32.NewIEEE()
 	writer := &Writer{file: file, out: io.MultiWriter(file, checksum), hash: checksum, blockSize: blockSize, currentBlock: &Block{}, offset: 0}
 	if err := writer.writeHeader(); err != nil {
@@ -58,6 +60,7 @@ func (w *Writer) Add(entry Entry) error {
 	}
 	w.currentBlock.Add(entry)
 	w.entryCount++
+	w.bloomKeys = append(w.bloomKeys, entry.SeriesID)
 	return nil
 }
 
@@ -78,6 +81,27 @@ func (w *Writer) flushBlock() error {
 	return nil
 }
 
+func (w *Writer) buildBloomFilter() {
+	w.bloomFilter = NewBloomFilter(w.entryCount, 0.01)
+
+	for _, key := range w.bloomKeys {
+		w.bloomFilter.Add(key)
+	}
+}
+
+func (w *Writer) writeBloomFilter() (uint64,uint64,error) {
+	bloomOffset := w.offset
+	if w.bloomFilter == nil || len(w.bloomFilter.Bits) == 0 {
+		return 0,0,nil
+	}
+
+	n, err := w.out.Write(w.bloomFilter.Bits)
+	if err != nil {
+		return 0,0,err
+	}
+	w.offset += uint64(n)
+	return bloomOffset,uint64(n),nil
+}
 func (w *Writer) writeIndex() (uint64, uint64, error) {
 	indexOffset := w.offset
 	var buf []byte
@@ -97,14 +121,16 @@ func (w *Writer) writeIndex() (uint64, uint64, error) {
 	return indexOffset, uint64(n), nil
 }
 
-func (w *Writer) writeFooter(indexOffset uint64, indexSize uint64) error {
+func (w *Writer) writeFooter(indexOffset uint64, indexSize uint64, bloomOffset uint64, bloomSize uint64) error {
 	footer := make([]byte, FooterSize)
 	binary.LittleEndian.PutUint32(footer[0:4], Magic)
 	footer[4] = Version
 	binary.LittleEndian.PutUint64(footer[8:16], indexOffset)
 	binary.LittleEndian.PutUint64(footer[16:24], indexSize)
-	binary.LittleEndian.PutUint64(footer[24:32], w.entryCount)
-	binary.LittleEndian.PutUint32(footer[32:36], w.hash.Sum32())
+	binary.LittleEndian.PutUint64(footer[24:32],bloomOffset)
+	binary.LittleEndian.PutUint64(footer[32:40],bloomSize)
+	binary.LittleEndian.PutUint64(footer[40:48], w.entryCount)
+	binary.LittleEndian.PutUint32(footer[48:52], w.hash.Sum32())
 	n, err := w.file.Write(footer)
 	if err != nil {
 		return err
@@ -117,11 +143,16 @@ func (w *Writer) Close() error {
 	if err := w.flushBlock(); err != nil {
 		return err
 	}
+	w.buildBloomFilter()
 	indexOffset, indexSize, err := w.writeIndex()
 	if err != nil {
 		return err
 	}
-	if err := w.writeFooter(indexOffset, indexSize); err != nil {
+	bloomOffset, bloomSize, err := w.writeBloomFilter()
+	if err != nil {
+		return err
+	}
+	if err := w.writeFooter(indexOffset, indexSize,bloomOffset,bloomSize); err != nil {
 		return err
 	}
 	if err := w.file.Sync(); err != nil {

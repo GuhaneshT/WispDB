@@ -24,7 +24,7 @@ const (
 	Magic            uint32 = 0x57495350
 	Version          uint8  = 1
 	DefaultBlockSize uint32 = 4096
-	FooterSize               = 36
+	FooterSize               = 52
 )
 
 type Footer struct {
@@ -32,8 +32,9 @@ type Footer struct {
 	Version     uint8
 	IndexOffset uint64
 	IndexSize   uint64
-	EntryCount  uint64
-	Checksum    uint32
 	BloomOffset uint64
 	BloomSize   uint64
+	EntryCount  uint64
+	Checksum    uint32
+
 }

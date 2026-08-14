@@ -1,19 +1,18 @@
 package sstable
 
 import (
-	"fmt"
 	"testing"
 )
 
 func TestBloomFilterAddAndMayContain(t *testing.T) {
 	bloom := NewBloomFilter(100, 0.01)
 
-	keys := [][]byte{
-		[]byte("apple"),
-		[]byte("banana"),
-		[]byte("orange"),
-		[]byte("grape"),
-		[]byte("mango"),
+	keys := []uint64{
+		0x6170706c65, // "apple"
+		0x62616e616e61, // "banana"
+		0x6f72616e6765, // "orange"
+		0x6772617065, // "grape"
+		0x6d616e676f, // "mango"
 	}
 
 	for _, key := range keys {
@@ -30,10 +29,10 @@ func TestBloomFilterAddAndMayContain(t *testing.T) {
 func TestBloomFilterEmpty(t *testing.T) {
 	bloom := NewBloomFilter(100, 0.01)
 
-	keys := [][]byte{
-		[]byte("apple"),
-		[]byte("banana"),
-		[]byte("orange"),
+	keys := []uint64{
+		0x6170706c65, // "apple"
+		0x62616e616e61, // "banana"
+		0x6f72616e6765, // "orange"
 	}
 
 	for _, key := range keys {
@@ -46,7 +45,7 @@ func TestBloomFilterEmpty(t *testing.T) {
 func TestBloomFilterDuplicateKeys(t *testing.T) {
 	bloom := NewBloomFilter(100, 0.01)
 
-	key := []byte("wisp")
+	key := uint64(0x77697370) // "wisp"
 
 	bloom.Add(key)
 	bloom.Add(key)
@@ -60,23 +59,23 @@ func TestBloomFilterDuplicateKeys(t *testing.T) {
 func TestBloomFilterDifferentKeys(t *testing.T) {
 	bloom := NewBloomFilter(1000, 0.01)
 
-	keys := []string{
-		"apple",
-		"banana",
-		"orange",
-		"grape",
-		"mango",
-		"watermelon",
-		"pineapple",
-		"strawberry",
+	keys := []uint64{
+		0x6170706c65, // "apple"
+		0x62616e616e61, // "banana"
+		0x6f72616e6765, // "orange"
+		0x6772617065, // "grape"
+		0x6d616e676f, // "mango"
+		0x77617465726d, // "watermelon"
+		0x70696e656170, // "pineapple"
+		0x73747261772d, // "strawberry"
 	}
 
 	for _, key := range keys {
-		bloom.Add([]byte(key))
+		bloom.Add(key)
 	}
 
 	for _, key := range keys {
-		if !bloom.MayContain([]byte(key)) {
+		if !bloom.MayContain(key) {
 			t.Errorf("Bloom filter failed for inserted key %q", key)
 		}
 	}
@@ -90,7 +89,7 @@ func TestBloomFilterFalsePositiveRate(t *testing.T) {
 
 	// Insert keys.
 	for i := uint64(0); i < expectedKeys; i++ {
-		key := []byte(fmt.Sprintf("key-%d", i))
+		key := uint64(i)
 		bloom.Add(key)
 	}
 
@@ -99,7 +98,7 @@ func TestBloomFilterFalsePositiveRate(t *testing.T) {
 	falsePositives := 0
 
 	for i := uint64(0); i < testKeys; i++ {
-		key := []byte(fmt.Sprintf("missing-key-%d", i))
+		key := uint64(i + expectedKeys)
 
 		if bloom.MayContain(key) {
 			falsePositives++
