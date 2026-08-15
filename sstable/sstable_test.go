@@ -290,3 +290,61 @@ func TestWriterReaderTombstoneRoundTrip(t *testing.T) {
 		t.Fatalf("Get() found tombstoned record")
 	}
 }
+
+// TestGetMissWithinMultiEntryBlock exercises findEntryInBlock's skip-forward
+// path: several entries share one block (small block size keeps them
+// together), and the requested key falls between two of them rather than
+// matching any — the scan must walk past each non-matching entry using its
+// encoded length and correctly report a miss instead of misreading a
+// neighboring entry's bytes.
+func TestGetMissWithinMultiEntryBlock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "data.sst")
+
+	writer, err := NewWriter(path, 4096)
+	if err != nil {
+		t.Fatalf("NewWriter() error = %v", err)
+	}
+	entries := []Entry{
+		{SeriesID: 1, Timestamp: 10, Value: []byte("alpha")},
+		{SeriesID: 1, Timestamp: 30, Value: []byte("beta")},
+		{SeriesID: 1, Timestamp: 50, Value: []byte("gamma")},
+	}
+	for _, entry := range entries {
+		if err := writer.Add(entry); err != nil {
+			t.Fatalf("Add() error = %v", err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	reader, err := OpenReader(path)
+	if err != nil {
+		t.Fatalf("OpenReader() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := reader.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	if len(reader.index) != 1 {
+		t.Fatalf("expected all entries in a single block, got %d index entries", len(reader.index))
+	}
+
+	// Timestamp 20 falls between the first and second entries but matches
+	// neither.
+	if _, found, deleted, err := reader.Get(1, 20); err != nil {
+		t.Fatalf("Get() unexpected error = %v", err)
+	} else if found || deleted {
+		t.Fatalf("Get(1, 20) = found=%v deleted=%v, want a clean miss", found, deleted)
+	}
+
+	// Every real entry should still resolve correctly despite sharing a block.
+	for _, want := range entries {
+		got, found, deleted, err := reader.Get(want.SeriesID, want.Timestamp)
+		if err != nil || !found || deleted || !bytes.Equal(got, want.Value) {
+			t.Fatalf("Get(%d, %d) = %q, %v, %v, %v, want %q, true, false, nil", want.SeriesID, want.Timestamp, got, found, deleted, err, want.Value)
+		}
+	}
+}

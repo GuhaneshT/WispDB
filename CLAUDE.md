@@ -36,11 +36,13 @@ Layering, bottom-up: `skiplist` → `memtable` → `wal` + `sstable` → `compac
 
 ### SSTable format (`sstable/`)
 
-Layout: 12-byte header (magic `0x57495350` = "WISP", version, blockSize, 3 reserved bytes) → data blocks → index → 36-byte footer. The footer's `Checksum` field is a CRC32 (IEEE, `hash/crc32`) over everything before the footer (header + blocks + index), computed incrementally in `Writer` via an `io.MultiWriter` and verified in `Reader.readFooter` after the index loads; a mismatch fails `OpenReader` the same way an invalid magic/version does.
+Layout: 12-byte header (magic `0x57495350` = "WISP", version, blockSize, 3 reserved bytes) → data blocks → index → bloom filter → 52-byte footer (`FooterSize` in `sstable.go`). The footer's `Checksum` field is a CRC32 (IEEE, `hash/crc32`) over everything before the footer (header + blocks + index + bloom filter, when present), computed incrementally in `Writer` via an `io.MultiWriter` and verified in `Reader.readFooter` after the index and bloom filter load; a mismatch fails `OpenReader` the same way an invalid magic/version does.
 
-- Block entry encoding (`block.go` / `reader.readBlock`): `entryLength(4) | seriesID(8) | timestamp(8) | deleted(1) | valueLength(4) | value`. Encoder and decoder are hand-rolled in separate files — changing one requires changing the other, plus `entryEncodedSize`.
+- Block entry encoding (`block.go` / `reader.go`): `entryLength(4) | seriesID(8) | timestamp(8) | deleted(1) | valueLength(4) | value`. Encoder and decoder are hand-rolled in separate files — changing one requires changing the other, plus `entryEncodedSize`.
 - Index entry: fixed 28 bytes (`seriesID, timestamp, offset, size`), one per block, keyed on the block's first entry. `readIndex` rejects any index whose size isn't a multiple of 28.
 - `Reader.findBlock` binary-searches the index (`sort.Search`) for the last entry whose key is `<=` the target, relying on the index being sorted ascending by construction.
+- Bloom filter (`bloom.go`): one filter per SSTable, keyed on `SeriesID`, built by `Writer` during flush/compaction and encoded after the index. `Reader.MayContain` is checked first in `Reader.Get` — a negative result skips the block search and all disk I/O for that table entirely; `bloomOffset`/`bloomSize` of `0` (pre-bloom-filter tables) makes `MayContain` always return `true` so `Get` degrades to the old point-lookup behavior.
+- `Reader.findEntryInBlock` walks a single block's raw bytes and returns as soon as it matches the target `(seriesID, timestamp)`, allocating exactly one value copy (or zero, on a miss) instead of decoding every entry in the block. `Reader.Get` calls this directly; `Reader.readBlock`, which decodes and copies every entry into a `[]Entry`, is kept only for callers that need the whole block (the compaction iterator in `iterator.go`) — the two decode loops are hand-kept in sync, same as the block encoder/decoder pair above.
 
 ### SSTable lifecycle (`sstable/sstable_list.go`)
 
@@ -65,6 +67,10 @@ Any caller of `GetTables()` **must** pair it with `defer sstable.ReleaseTables(t
 **SSTable checksum validation:** The footer's `Checksum` field now holds a real CRC32 (IEEE) over the data+index, computed incrementally during write and verified on open. Mismatches fail `OpenReader` cleanly (like invalid magic/version), preventing silent corruption from going undetected.
 
 **`Reader.findBlock` binary search:** Replaced the O(n) linear scan over the index with `sort.Search` (O(log n)), relying on the index being sorted ascending by construction. Same "last block whose first key is `<=` target" semantics, just faster as SSTables accumulate more blocks.
+
+**Per-SSTable bloom filters:** `Reader.Get` checks `MayContain` before any disk I/O; a negative result skips the block search, block read, and CRC-adjacent work for that table entirely. Built by `Writer` during flush/compaction, encoded between the index and footer.
+
+**Targeted block decode (`Reader.findEntryInBlock`):** `Get` no longer decodes an entire block into a `[]Entry` (with a value-copy per entry) just to find one match. It scans the raw block bytes and stops at the first matching `(seriesID, timestamp)`, allocating one value copy on a hit and none on a miss. `readBlock` is unchanged and still used by the compaction iterator, which genuinely needs every entry.
 
 ## Known in-progress state
 

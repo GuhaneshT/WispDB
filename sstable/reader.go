@@ -129,19 +129,17 @@ func (r *Reader) Get(seriesID uint64, timestamp int64) ([]byte, bool,bool, 	 err
 	if !found {
 		return nil, false,false, nil
 	}
-	entries, err := r.readBlock(block)
+	value, found, deleted, err := r.findEntryInBlock(block, seriesID, timestamp)
 	if err != nil {
-		return nil, false,false, err
+		return nil, false, false, err
 	}
-	for _, entry := range entries {
-		if entry.SeriesID == seriesID && entry.Timestamp == timestamp {
-			if entry.Deleted {
-				return nil, false, true, nil
-			}
-			return entry.Value, true, false, nil
-		}
+	if !found {
+		return nil, false, false, nil
 	}
-	return nil, false, false, nil
+	if deleted {
+		return nil, false, true, nil
+	}
+	return value, true, false, nil
 }
 
 // func (r *Reader) Get(seriesID uint64, timestamp int64) ([]byte, bool, bool, error) {
@@ -241,6 +239,43 @@ func (r *Reader) readBlock(indexEntry IndexEntry) ([]Entry, error) {
 		pos += entryLength
 	}
 	return entries, nil
+}
+
+// findEntryInBlock walks the raw block bytes the same way readBlock does,
+// but returns as soon as it hits the matching (seriesID, timestamp) entry —
+// allocating exactly one value copy (or zero, on a miss) instead of
+// decoding and copying every entry in the block.
+func (r *Reader) findEntryInBlock(indexEntry IndexEntry, seriesID uint64, timestamp int64) ([]byte, bool, bool, error) {
+	data := make([]byte, indexEntry.Size)
+	if _, err := r.file.ReadAt(data, int64(indexEntry.Offset)); err != nil {
+		return nil, false, false, err
+	}
+	for pos := 0; pos < len(data); {
+		if pos+4 > len(data) {
+			return nil, false, false, fmt.Errorf("corrupt block entry length")
+		}
+		entryLength := int(binary.LittleEndian.Uint32(data[pos : pos+4]))
+		pos += 4
+		if pos+entryLength > len(data) || entryLength < 21 {
+			return nil, false, false, fmt.Errorf("corrupt block entry")
+		}
+		entrySeriesID := binary.LittleEndian.Uint64(data[pos : pos+8])
+		entryTimestamp := int64(binary.LittleEndian.Uint64(data[pos+8 : pos+16]))
+		if entrySeriesID != seriesID || entryTimestamp != timestamp {
+			pos += entryLength
+			continue
+		}
+		deleted := data[pos+16] != 0
+		valueLength := int(binary.LittleEndian.Uint32(data[pos+17 : pos+21]))
+		valueStart := pos + 21
+		valueEnd := valueStart + valueLength
+		if valueEnd > pos+entryLength {
+			return nil, false, false, fmt.Errorf("corrupt block value")
+		}
+		value := append([]byte(nil), data[valueStart:valueEnd]...)
+		return value, true, deleted, nil
+	}
+	return nil, false, false, nil
 }
 
 func compareEntries(a Entry, b Entry) int {
