@@ -54,7 +54,12 @@ func (it *Iterator) Value() []byte { if it.current == nil { return nil }; return
 
 func (it *Iterator) Deleted() bool { if it.current == nil { return false }; return it.current.Deleted }
 
-func (it *Iterator) Entry() (Key, []byte) { if it.current == nil { return Key{}, nil }; return it.current.Key, it.current.Value }
+func (it *Iterator) Entry() (Key, []byte, bool) {
+	if it.current == nil {
+		return Key{}, nil, false
+	}
+	return it.current.Key, it.current.Value, it.current.Deleted
+}
 
 type Skiplist struct {
 	head         *node

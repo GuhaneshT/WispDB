@@ -27,7 +27,7 @@ func (it *MemTableIterator) Next() {
 	it.iterator.Next()
 }
 
-func (it *MemTableIterator) Entry() (skiplist.Key, []byte) {
+func (it *MemTableIterator) Entry() (skiplist.Key, []byte, bool) {
 	return it.iterator.Entry()
 }
 

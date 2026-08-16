@@ -1,5 +1,7 @@
 package sstable
 
+import "wisp/skiplist"
+
 type Iterator struct {
 	reader     *Reader
 	blockIndex int
@@ -23,12 +25,13 @@ func (it *Iterator) Valid() bool {
 	return it.valid
 }
 
-func (it *Iterator) Key() Entry {
+func (it *Iterator) Key() skiplist.Key {
 	if !it.valid {
-		return Entry{}
+		return skiplist.Key{}
 	}
 
-	return it.entries[it.entryIndex]
+	e := it.entries[it.entryIndex]
+	return skiplist.Key{SeriesID: e.SeriesID, Timestamp: e.Timestamp}
 }
 
 func (it *Iterator) Entry() Entry {

@@ -72,7 +72,7 @@ func TestIteratorOrdersBySeriesAndTimestamp(t *testing.T) {
 	var got []Key
 	var values [][]byte
 	for it.Valid() {
-		key, value := it.Entry()
+		key, value, _ := it.Entry()
 		got = append(got, key)
 		values = append(values, append([]byte(nil), value...))
 		it.Next()

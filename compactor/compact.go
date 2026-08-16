@@ -70,7 +70,7 @@ func CompactSSTables(tables []*sstable.SSTableFile, opts CompactorOptions) (*sst
 		it := tbl.Reader.Iterator()
 		if it.Valid() {
 			heap.Push(h, heapItem{
-				entry:      it.Key(),
+				entry:      it.Entry(),
 				gen:        tbl.Gen,
 				sstableIdx: idx,
 				iterator:   it,
@@ -107,7 +107,7 @@ func CompactSSTables(tables []*sstable.SSTableFile, opts CompactorOptions) (*sst
 
 		if item.iterator.Next() {
 			heap.Push(h, heapItem{
-				entry:      item.iterator.Key(),
+				entry:      item.iterator.Entry(),
 				gen:        item.gen,
 				sstableIdx: item.sstableIdx,
 				iterator:   item.iterator,

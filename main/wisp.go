@@ -318,8 +318,8 @@ func (w *Wisp) flushImmutable(imm *memtable.MemTable) error {
 
 	it := imm.Iterator()
 	for it.Valid() {
-		key, value := it.Entry()
-		entry := sstable.Entry{SeriesID: key.SeriesID, Timestamp: key.Timestamp, Deleted: it.Deleted(), Value: value}
+		key, value, deleted := it.Entry()
+		entry := sstable.Entry{SeriesID: key.SeriesID, Timestamp: key.Timestamp, Deleted: deleted, Value: value}
 		if err := writer.Add(entry); err != nil {
 			_ = writer.Close()
 			w.mu.Lock()
