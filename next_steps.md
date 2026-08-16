@@ -8,8 +8,6 @@ The problem: Reader.readBlock (sstable/reader.go) decodes every entry in a block
 
 The fix: Add a Reader.findEntryInBlock(indexEntry, seriesID, timestamp) ([]byte, bool, bool, error) that walks the raw block bytes the same way readBlock does now, but returns as soon as it hits a matching key — allocating exactly one value copy (or zero, on a miss) instead of decoding the whole block. Keep readBlock itself for callers that genuinely need every entry (e.g. compaction's Iterator, if it goes through the same path — worth checking), and have Get call the new targeted version instead.
 
-Why this ranks above the write-path item below: it's the most direct continuation of the WAL/block-encoding allocation work already done this session — same category of fix (stop materializing more than you need), same file family (sstable/), low risk (pure read-path, no format change), and it compounds with the Bloom filter: once a table passes the Bloom check, this makes the actual read cheap too.
-
 Priority 3: Range/iterator query API
 The problem: Wisp only exposes point lookups (Get(seriesID, timestamp)). Time-series workloads are almost never single-point — "give me everything for series X between t1 and t2" is the basic access pattern, and there's currently no way to do that without calling Get in a loop over guessed timestamps, which doesn't work when you don't already know which timestamps exist.
 
