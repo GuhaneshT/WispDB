@@ -15,6 +15,24 @@ The fix: Add Wisp.Scan(seriesID, startTs, endTs) (Entry, error) returning a merg
 
 Why this ranks above compression/TTL/metrics below: without it, Wisp is a KV store with a two-column key, not a usable time-series engine — every other feature on this list is an optimization or operational concern layered on top of a working query surface. This one changes what the engine can actually be used for.
 
+Open decision: mutable memtable scan concurrency. SSTable iterators are already safe for a long-lived scan (GetTables/ReleaseTables refcounting pins the file, same pattern Get uses), and the immutable memtable is safe too (Freeze() makes Put/Delete refuse further writes, so its skiplist is content-frozen the instant it's snapshotted). The mutable memtable is the open problem: CLAUDE.md notes "the skiplist itself has no internal locking and relies entirely on w.mu," and skiplist.insert does an in-place mutation on a duplicate key (next.Value = value; next.Deleted = deleted) rather than only ever appending — so a scan that walks forward pointers after releasing w.mu races with concurrent Insert/Delete. Three options, not yet decided:
+
+1. Lock-free append-only skiplist (RocksDB/LevelDB method — fastest, most work). Both engines make the memtable single-writer/multi-reader with *zero* read-side locking, and it's not just "reads happen to be quick" — it's structural:
+   - The skiplist is append-only: insert only ever prepends brand-new nodes ahead of existing ones. An existing node's key/value is never touched again once linked in — no in-place update on a duplicate key the way WispDB's skiplist.insert does today. (RocksDB's actual behavior on a duplicate key is to insert a second node for the same key rather than mutate the first; newest-wins is resolved at read time by sequence number, the same "newest generation wins" idea WispDB's SSTable generations already use.)
+   - Node publication uses an atomic release-store on the node's forward pointer when linking it into the list, paired with an atomic acquire-load on the reader side when traversing forward pointers. That ordering guarantees a concurrent reader either observes the list state fully before the insert or fully after it — never a torn/partial pointer — which is what makes lock-free traversal memory-safe, not merely "usually fine in practice."
+   - Memory comes from an arena (bump allocator): nodes are allocated once and never freed or resized while the memtable is reachable, so there's no use-after-free risk from a reader that's lagging behind a concurrent writer (no ABA problem, no dangling pointer if a node were freed mid-read).
+   - Concurrent *writers* are still serialized by one write lock/mutex — only inserting requires mutual exclusion; iteration and point lookups need no lock at all, at any point, even during heavy concurrent writes. This is why it's "fastest": a scan never blocks writers and is never blocked by them.
+   - Cost for WispDB: this means reworking skiplist.go's node struct to use atomic.Pointer for forward links, removing the in-place mutation branch in insert(), and resolving duplicate keys at merge/read time instead of at insert time — a real change to the core data structure, not an additive scan feature.
+2. Freeze-on-scan (pragmatic middle ground). Reuse the existing freezeMutableLocked() rotation (same path flush already triggers): briefly hold w.mu to seal the current mutable memtable into the immutable slot and install a fresh mutable memtable, then scan the now-frozen copy lock-free, same as the immutable memtable is already handled. One bounded rotation cost per scan instead of per-entry, no changes to the skiplist itself. Needs to fold into the existing single-slot immutable memtable design (only one pending-flush immutable memtable at a time) rather than bypass it.
+3. Hold w.mu.RLock() for the whole scan (simplest, slowest). Correct with zero new code, but stalls all writers for as long as the scan runs — a long range scan under concurrent write load could meaningfully hurt write latency.
+
+Sources:
+- [LevelDB Explained - The Implementation Details of MemTable](https://selfboot.cn/en/2025/06/11/leveldb_source_memtable/)
+- [LevelDB Source Reading (4): Concurrent Access](http://tonyz93.blogspot.com/2016/11/leveldb-source-reading-4-concurrent.html)
+- [LevelDB Explained - How to implement SkipList](https://selfboot.cn/en/2024/09/09/leveldb_source_skiplist/)
+- [Prometheus TSDB (Part 1): The Head Block | Ganesh Vernekar](https://ganeshvernekar.com/blog/prometheus-tsdb-the-head-block/)
+- [prometheus/tsdb/head.go at main · prometheus/prometheus](https://github.com/prometheus/prometheus/blob/main/tsdb/head.go)
+
 Priority 4: Per-block compression (snappy/zstd)
 The problem: SSTable blocks are stored raw. For time-series data — which is often highly repetitive (similar deltas, sparse values, repeated series IDs) — that wastes disk space and I/O bandwidth on every read and write.
 
