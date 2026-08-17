@@ -2,13 +2,10 @@ package sstable
 
 import (
 	"encoding/binary"
-	"fmt"
 	"hash"
 	"hash/crc32"
 	"io"
 	"os"
-
-	"github.com/golang/snappy"
 )
 
 type Writer struct {

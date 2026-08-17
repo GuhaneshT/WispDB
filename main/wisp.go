@@ -638,34 +638,31 @@ func (w *Wisp) Close() error {
 	return closeErr
 }
 
-func (w *Wisp) snapshotForScan() (*memtable.MemTable, *memtable.MemTable, []*sstable.SSTableFile, error) {
-	w.mu.Lock()
+// func (w *Wisp) snapshotForScan() (*memtable.MemTable, *memtable.MemTable, []*sstable.SSTableFile, error) {
+// 	w.mu.Lock()
 
-	for w.immutableMemTable != nil {
-		imm := w.immutableMemTable
-		w.mu.Unlock()
-		if err := w.flushImmutable(imm); err != nil {
-			w.mu.Lock()
-			return nil, nil, nil, err
-		}
-		w.mu.Lock()
-	}
+// 	for w.immutableMemTable != nil {
+// 		imm := w.immutableMemTable
+// 		w.mu.Unlock()
+// 		if err := w.flushImmutable(imm); err != nil {
+// 			w.mu.Lock()
+// 			return nil, nil, nil, err
+// 		}
+// 		w.mu.Lock()
+// 	}
 
-	if w.mutableMemTable.Size() > 0 {
-		if err := w.freezeMutableLocked(); err != nil {
-			w.mu.Unlock()
-			return nil, nil, nil, err
-		}
-	}
+// 	if w.mutableMemTable.Size() > 0 {
+// 		if err := w.freezeMutableLocked(); err != nil {
+// 			w.mu.Unlock()
+// 			return nil, nil, nil, err
+// 		}
+// 	}
 
-	mutableMemtable := w.mutableMemTable    
-	immutableMemtable := w.immutableMemTable 
-	tables := w.config.SSTableList.GetTables()
+// 	mutableMemtable := w.mutableMemTable    
+// 	immutableMemtable := w.immutableMemTable 
+// 	tables := w.config.SSTableList.GetTables()
 
-	w.mu.Unlock()
-	return mutableMemtable, immutableMemtable, tables, nil
-}
+// 	w.mu.Unlock()
+// 	return mutableMemtable, immutableMemtable, tables, nil
+// }
 
-func (w *Wisp) Scan(startTs int64, endTs int64, seriesID uint64) ([][]byte, bool,error){
-
-}
