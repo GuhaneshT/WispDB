@@ -1,12 +1,14 @@
 package main
 
 import (
+	"container/heap"
 	"errors"
 	"fmt"
 	"os"
 	"sync"
 	"wisp/compactor"
 	"wisp/memtable"
+	"wisp/skiplist"
 	"wisp/sstable"
 	"wisp/wal"
 )
@@ -24,6 +26,237 @@ const (
 	defaultMemTableThreshold = 4 * 1024 * 1024
 	defaultWALMaxSegmentSize = wal.DefaultMaxSegmentSize
 )
+
+type scanHeapItem struct {
+	key       skiplist.Key
+	value     []byte
+	deleted   bool
+	gen       uint64
+	sourceIdx int
+	iterator  interface{} //memtable or sstavle
+}
+
+type scanMinHeap []scanHeapItem
+
+func (h scanMinHeap) Len() int { return len(h) }
+
+func (h scanMinHeap) Less(i, j int) bool {
+	if h[i].key.SeriesID != h[j].key.SeriesID {
+		return h[i].key.SeriesID < h[j].key.SeriesID
+	}
+	if h[i].key.Timestamp != h[j].key.Timestamp {
+		return h[i].key.Timestamp < h[j].key.Timestamp
+	}
+	return h[i].sourceIdx < h[j].sourceIdx
+}
+
+func (h scanMinHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
+
+func (h *scanMinHeap) Push(x interface{}) {
+	*h = append(*h, x.(scanHeapItem))
+}
+
+func (h *scanMinHeap) Pop() interface{} {
+	old := *h
+	n := len(old)
+	item := old[n-1]
+	*h = old[0 : n-1]
+	return item
+}
+
+type ScanIterator struct {
+	heap       *scanMinHeap
+	seriesID   uint64
+	startTs    int64
+	endTs      int64
+	tables     []*sstable.SSTableFile
+	lastKey    *skiplist.Key
+	valid      bool
+	currentKey skiplist.Key
+	currentVal []byte
+}
+
+// snapshotForScan freezes the mutable memtable (so it's safe to scan
+// lock-free) and returns the now-immutable snapshot plus a refcounted
+// handle on every SSTable. If a flush is already in flight when this is
+// called, it waits for that flush to land — the same wait-then-freeze
+// loop prepareMutableMemTableLocked already uses on the write path —
+// rather than skipping the freeze, which would either overwrite
+// w.immutableMemTable (permanently losing whatever hasn't been flushed
+// yet) or leave the mutable memtable's contents out of the scan.
+func (w *Wisp) snapshotForScan() (*memtable.MemTable, []*sstable.SSTableFile, error) {
+	w.mu.Lock()
+	for w.mutableMemTable.Size() > 0 && w.immutableMemTable != nil {
+		imm := w.immutableMemTable
+		w.mu.Unlock()
+		if err := w.flushImmutable(imm); err != nil {
+			return nil, nil, err
+		}
+		w.mu.Lock()
+	}
+	if w.mutableMemTable.Size() > 0 {
+		if err := w.freezeMutableLocked(); err != nil {
+			w.mu.Unlock()
+			return nil, nil, err
+		}
+	}
+	imm := w.immutableMemTable
+	tables := w.config.SSTableList.GetTables()
+	w.mu.Unlock()
+
+	return imm, tables, nil
+}
+
+func (w *Wisp) Scan(seriesID uint64, startTs, endTs int64) (*ScanIterator, error) {
+	imm, tables, err := w.snapshotForScan()
+	if err != nil {
+		return nil, err
+	}
+
+	h := &scanMinHeap{}
+	heap.Init(h)
+
+	
+	if imm != nil {
+		it := imm.Iterator()
+		if it.Valid() {
+			key, value, deleted := it.Entry()
+			heap.Push(h, scanHeapItem{
+				key:       key,
+				value:     value,
+				deleted:   deleted,
+				gen:       0,
+				sourceIdx: 0,
+				iterator:  it,
+			})
+		}
+	}
+
+	
+	for idx, tbl := range tables {
+		if tbl == nil || tbl.Reader == nil {
+			continue
+		}
+		it := tbl.Reader.Iterator()
+		if it.Valid() {
+			key := it.Key()
+			value := it.Entry().Value
+			deleted := it.Entry().Deleted
+			heap.Push(h, scanHeapItem{
+				key:       key,
+				value:     value,
+				deleted:   deleted,
+				gen:       tbl.Gen,
+				sourceIdx: 1 + idx,
+				iterator:  it,
+			})
+		}
+	}
+
+	return &ScanIterator{
+		heap:     h,
+		seriesID: seriesID,
+		startTs:  startTs,
+		endTs:    endTs,
+		tables:   tables,
+	}, nil
+}
+
+func (it *ScanIterator) Valid() bool {
+	return it.valid
+}
+
+func (it *ScanIterator) Next() bool {
+	if it.heap.Len() == 0 {
+		it.valid = false
+		return false
+	}
+
+	for it.heap.Len() > 0 {
+		item := heap.Pop(it.heap).(scanHeapItem)
+		key := item.key
+
+		
+		var nextItem scanHeapItem
+		if item.sourceIdx == 0 {
+			// Immutable memtable
+			memIt := item.iterator.(*memtable.MemTableIterator)
+			memIt.Next()
+			if memIt.Valid() {
+				k, v, d := memIt.Entry()
+				nextItem = scanHeapItem{
+					key:       k,
+					value:     v,
+					deleted:   d,
+					gen:       0,
+					sourceIdx: 0,
+					iterator:  memIt,
+				}
+				heap.Push(it.heap, nextItem)
+			}
+		} else {
+			// SSTable
+			sstIt := item.iterator.(*sstable.Iterator)
+			if sstIt.Next() {
+				k := sstIt.Key()
+				e := sstIt.Entry()
+				nextItem = scanHeapItem{
+					key:       k,
+					value:     e.Value,
+					deleted:   e.Deleted,
+					gen:       item.gen,
+					sourceIdx: item.sourceIdx,
+					iterator:  sstIt,
+				}
+				heap.Push(it.heap, nextItem)
+			}
+		}
+
+		
+		if key.SeriesID != it.seriesID {
+			continue
+		}
+
+		
+		if key.Timestamp < it.startTs || key.Timestamp > it.endTs {
+			continue
+		}
+
+		
+		if it.lastKey != nil && it.lastKey.SeriesID == key.SeriesID && it.lastKey.Timestamp == key.Timestamp {
+			continue
+		}
+
+		
+		if item.deleted {
+			it.lastKey = &key
+			continue
+		}
+
+		it.currentKey = key
+		it.currentVal = item.value
+		it.lastKey = &key
+		it.valid = true
+		return true
+	}
+
+	it.valid = false
+	return false
+}
+
+func (it *ScanIterator) Entry() (skiplist.Key, []byte, bool) {
+	if !it.valid {
+		return skiplist.Key{}, nil, false
+	}
+	return it.currentKey, it.currentVal, false
+}
+
+func (it *ScanIterator) Close() error {
+	sstable.ReleaseTables(it.tables)
+	return nil
+}
+
+
 
 type WispConfig struct {
 	WALPath                string
@@ -403,4 +636,36 @@ func (w *Wisp) Close() error {
 		w.wal = nil
 	}
 	return closeErr
+}
+
+func (w *Wisp) snapshotForScan() (*memtable.MemTable, *memtable.MemTable, []*sstable.SSTableFile, error) {
+	w.mu.Lock()
+
+	for w.immutableMemTable != nil {
+		imm := w.immutableMemTable
+		w.mu.Unlock()
+		if err := w.flushImmutable(imm); err != nil {
+			w.mu.Lock()
+			return nil, nil, nil, err
+		}
+		w.mu.Lock()
+	}
+
+	if w.mutableMemTable.Size() > 0 {
+		if err := w.freezeMutableLocked(); err != nil {
+			w.mu.Unlock()
+			return nil, nil, nil, err
+		}
+	}
+
+	mutableMemtable := w.mutableMemTable    
+	immutableMemtable := w.immutableMemTable 
+	tables := w.config.SSTableList.GetTables()
+
+	w.mu.Unlock()
+	return mutableMemtable, immutableMemtable, tables, nil
+}
+
+func (w *Wisp) Scan(startTs int64, endTs int64, seriesID uint64) ([][]byte, bool,error){
+
 }

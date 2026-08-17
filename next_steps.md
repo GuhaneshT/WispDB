@@ -29,18 +29,73 @@
 3\. Hold w\.mu.RLock() for the whole scan (simplest, slowest). Correct with zero new code, but stalls all writers for as long as the scan runs — a long range scan under concurrent write load could meaningfully hurt write latency.
 
 ## Sources
-\- [LevelDB Explained - The Implementation Details of MemTable](https://selfboot.cn/en/2025/06/11/leveldb_source_memtable/)
-\- [LevelDB Source Reading (4): Concurrent Access](http://tonyz93.blogspot.com/2016/11/leveldb-source-reading-4-concurrent.html)
-\- [LevelDB Explained - How to implement SkipList](https://selfboot.cn/en/2024/09/09/leveldb_source_skiplist/)
-\- [Prometheus TSDB (Part 1): The Head Block | Ganesh Vernekar](https://ganeshvernekar.com/blog/prometheus-tsdb-the-head-block/)
-\- [prometheus/tsdb/head.go at main · prometheus/prometheus](https://github.com/prometheus/prometheus/blob/main/tsdb/head.go)
+
+**Scan concurrency & skiplist design (Priority 3)**
+- [LevelDB Explained - The Implementation Details of MemTable](https://selfboot.cn/en/2025/06/11/leveldb_source_memtable/)
+- [LevelDB Source Reading (4): Concurrent Access](http://tonyz93.blogspot.com/2016/11/leveldb-source-reading-4-concurrent.html)
+- [LevelDB Explained - How to implement SkipList](https://selfboot.cn/en/2024/09/09/leveldb_source_skiplist/)
+- [Prometheus TSDB (Part 1): The Head Block | Ganesh Vernekar](https://ganeshvernekar.com/blog/prometheus-tsdb-the-head-block/)
+- [prometheus/tsdb/head.go at main · prometheus/prometheus](https://github.com/prometheus/prometheus/blob/main/tsdb/head.go)
+
+**Read & write latency optimizations (Priority 4.7)**
+
+*RocksDB — compaction strategy & amplification tradeoffs*
+- [RocksDB Tuning Guide — read/write amplification, compaction strategies](https://github.com/facebook/rocksdb/wiki/RocksDB-Tuning-Guide)
+- [5 RocksDB Tweaks That Tame Write Amplification](https://medium.com/@connect.hashblock/5-rocksdb-tweaks-that-tame-write-amplification-f31685910d6e)
+- [Architecting Log-Structured Merge Trees: Optimizing Write-Intensive Performance](https://martinuke0.github.io/posts/2026-05-26-architecting-log-structured-merge-trees-optimizing-write-intensive-performance-for-distributed-database-systems-at-scale/)
+
+*Pebble (CockroachDB) — block cache, compression profiles, L0 sublevels*
+- [Storage Layer — block cache and compression strategies](https://www.cockroachlabs.com/docs/v26.2/architecture/storage-layer)
+- [Value Separation in Pebble: Storage Engine Optimization](https://www.cockroachlabs.com/blog/value-separation-pebble-optimization/)
+- [The LSM Design Space and its Read Optimizations](https://subhadeep.net/assets/fulltext/The_LSM_Design_Space_and_its_Read_Optimizations.pdf)
+
+*VictoriaMetrics — concurrency limiting, cardinality management for time-series*
+- [Performance optimization: string interning for cardinality](https://victoriametrics.com/blog/tsdb-performance-techniques-strings-interning/)
+- [Performance optimization: limiting concurrency reduces thread overhead](https://victoriametrics.com/blog/tsdb-performance-techniques-limiting-concurrency/)
+- [Performance optimization: function result caching](https://victoriametrics.com/blog/tsdb-performance-techniques-functions-caching/)
 
 ## Priority 4: Per-block compression (snappy/zstd) [DONE]
 **The problem:** SSTable blocks are stored raw. For time-series data — which is often highly repetitive (similar deltas, sparse values, repeated series IDs) — that wastes disk space and I/O bandwidth on every read and write.
 
-**The fix:** Compress each block's encoded bytes before writing (block header already carries a blockSize field in the SSTable header, and the format is versioned, so this is an additive change: add a compression-type byte per block or per file, decompress in Reader.readBlock / findEntryInBlock before parsing entries). Snappy is the conventional LSM choice (fast decompress, modest ratio); zstd trades more CPU for a better ratio.
+**The fix:** Compress each block's encoded bytes before writing. Snappy is the conventional LSM choice (fast decompress, modest ratio); zstd trades more CPU for a better ratio. Done: blocks are always snappy-compressed, no metadata needed.
+
+## Priority 4.5: Delta compression (follow-up optimization)
+**The problem:** Snappy achieves ~40% reduction on raw block bytes, but time-series data has more structure snappy doesn't exploit: timestamps are sequential (100, 200, 300 → deltas 100, 100, 100), seriesIDs repeat within a block (all 1s, then all 2s → delta 0, 0, 0). Deltas are much smaller and compress better than absolutes.
+
+**The fix:** Encode timestamps and values as deltas before snappy compression. Store the first (absolute) value, then encode the delta from the prior value for each subsequent entry. Snappy on deltas gives 60–70% reduction vs 40% on raw — essentially free extra savings since decompression is already happening. Adds complexity to block encoding/decoding but is a pure extension (old tables still work).
+
+**Why later:** Snappy alone ships today and is a 2–3x improvement in disk usage. Delta compression is the follow-up win once you have numbers showing the current ratio and can measure the actual improvement.
 
 **Why this ranks** below the range API: it's a real format change (needs a version bump and back-compat handling for existing uncommitted-format files) and a pure resource-efficiency win, not a capability the engine currently lacks entirely.
+
+## Priority 4.7: Read & write latency optimizations (measure-first)
+
+**The problem:** Once scan is working, profiling will show where latency is spent. Common bottlenecks in LSM engines:
+- **Read latency:** decompressing the same blocks repeatedly (not cached between calls)
+- **GC pressure:** allocations during decompression/parsing per read
+- **Read amplification:** number of SSTable files checked per logical read (bloom filters help, but compaction strategy matters)
+- **Write latency:** WAL fsync serializes concurrent writers; group commit unbatches this
+
+**The fix (rank by impact, do only after profiling):**
+
+1. **Block cache** — keep decompressed blocks in memory so cache hits skip decompression. Benefit: 10–50x faster for hot blocks. Effort: 100–200 lines. Measurement: how often are the same blocks read repeatedly in real workload?
+
+2. **WAL group commit** — batch fsyncs across concurrent writers instead of per-record (see Priority 8 for details). Benefit: 10–100x throughput increase under load, but ~1–2ms latency increase per write. Effort: 200+ lines, architectural change. Tradeoff: throughput vs write latency.
+
+3. **Buffer pool for decompression** — reuse byte slices via sync.Pool to reduce GC. Benefit: ~5–10% latency improvement. Effort: 10–20 lines. Measurement: does profiling show snappy.Decode allocation in the hot path?
+
+4. **Tunable bloom filter FPR** — higher false positive rate = faster writes, more disk reads on misses. Benefit: context-dependent. Effort: 5 lines to parameterize. Measurement: what's the actual false positive rate on real data?
+
+5. **Prefetch next block during scan** — queue background reads for adjacent blocks while processing current one. Benefit: 10–20% scan latency if I/O-bound. Effort: 50–100 lines. Measurement: is I/O latency actually the bottleneck for scans?
+
+6. **Keep SSTables open** — reuse file handles across reads instead of open/close per-read. Benefit: ~1–3% latency (saves syscalls). Effort: 50–100 lines. Measurement: how much time is spend in Open syscalls?
+
+**Why measure first:** RocksDB tuning shows the bottleneck is workload-specific. What looks like a 50% win on paper (fewer syscalls) can be invisible in practice if mutex contention is actually the issue. Pebble's compression profiles show that "best" compression varies by level and block type — one-size-fits-all doesn't work.
+
+**Learn from:**
+- [RocksDB Tuning Guide](https://github.com/facebook/rocksdb/wiki/RocksDB-Tuning-Guide) — compaction strategy, read/write amplification tradeoffs
+- [Pebble compression profiles](https://www.cockroachlabs.com/docs/v26.2/architecture/storage-layer) — different strategies for different layers (fastest for L0, good for lower levels)
+- [VictoriaMetrics concurrency limiting](https://victoriametrics.com/blog/tsdb-performance-techniques-limiting-concurrency/) — reducing thread overhead saves more than optimizing individual syscalls
 
 ## Priority 5: TTL / retention policies
 **The problem:** Time-series data is usually retained for a bounded window (e.g. 30 days) and then discarded. Right now the only way to remove data is an explicit Delete per key — there's no way to say "drop everything older than X" without an application-level sweep.

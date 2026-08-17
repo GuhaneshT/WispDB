@@ -54,7 +54,17 @@ This project exists to build and understand that design firsthand — every laye
 
 ## Status
 
-Point lookups (`Get`) and writes (`Insert`/`Delete`) are implemented and tested, including concurrent access. Range/scan queries are in progress — see [`next_steps.md`](next_steps.md) for the current priority list and open design decisions.
+**Implemented:**
+- Point lookups (`Get`) and writes (`Insert`/`Delete`) with tombstone support
+- Concurrent access with reference-counted SSTable management
+- Snappy compression on blocks
+- Bloom filters per SSTable
+- WAL segmentation and recovery
+- CRC32 validation on SSTables
+
+**In progress:**
+- Range/scan queries (`Scan`) — freeze-on-scan approach, ready for testing
+- See [`next_steps.md`](next_steps.md) for the roadmap and open decisions
 
 ## Getting started
 
