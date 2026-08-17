@@ -10,7 +10,7 @@
 
 **The fix:** Add a Reader.findEntryInBlock(indexEntry, seriesID, timestamp) ([]byte, bool, bool, error) that walks the raw block bytes the same way readBlock does now, but returns as soon as it hits a matching key — allocating exactly one value copy (or zero, on a miss) instead of decoding the whole block. Keep readBlock itself for callers that genuinely need every entry (e.g. compaction's Iterator, if it goes through the same path — worth checking), and have Get call the new targeted version instead.
 
-## Priority 3: Range/iterator query API
+## Priority 3: Range/iterator query API [DONE]
 **The problem:** Wisp only exposes point lookups (Get(seriesID, timestamp)). Time-series workloads are almost never single-point — "give me everything for series X between t1 and t2" is the basic access pattern, and there's currently no way to do that without calling Get in a loop over guessed timestamps, which doesn't work when you don't already know which timestamps exist.
 
 **The fix:** Add Wisp.Scan(seriesID, startTs, endTs) (Entry, error) returning a merged iterator over the mutable memtable, immutable memtable, and all SSTables (newest generation wins on duplicate keys, tombstones suppress older values — same precedence rules Get already follows). The compactor's existing k-way merge heap over per-SSTable iterators is the direct template for this; the new piece is merging live memtables into the same heap and stopping at endTs instead of exhausting every source.
@@ -117,10 +117,3 @@
 **The fix:** A test that forks a subprocess (or fakes an os.Exit) at controlled points — after WAL append but before memtable insert, after SSTable write but before WAL truncation, mid-compaction before ReplaceTables — then reopens the engine and verifies no data loss and no double-application.
 
 **Why this ranks** last among the new items: it's a test-only investment with no product-facing feature, valuable but not blocking any of the above from shipping.
-
-## Priority 8 (deferred): WAL group commit (batch fsyncs across concurrent writers)
-**The problem:** WAL.AppendRecord (wal/wal.go) calls w\.file.Sync() synchronously on every single record, while holding w\.mu. Under concurrent writers, each one serializes behind the previous writer's fsync — and fsync is typically the slowest operation in the whole write path (real disk flush, not just an OS buffer write). This is a correctness-safe design (CLAUDE.md documents it as intentional: "append to WAL (fsync per record)"), but it caps write throughput at roughly 1 / fsync_latency regardless of CPU or how many goroutines are writing.
-
-**The fix:** Classic group-commit pattern — instead of each AppendRecord call fsyncing for itself, batch: writers append their record to the buffer and enqueue a "waiting for durability" signal; one goroutine (or the last writer to arrive in a short window) performs a single Sync() covering everyone's appended bytes, then wakes all waiters. This trades a small, bounded latency window (batch collection time, typically sub-millisecond to a few ms) for dramatically higher throughput under concurrent load — the same technique RocksDB/LevelDB/Postgres use.
-
-Deferred at the user's request (2026-08-15) — revisit after the range/iterator API and other items above. It's a bigger structural change (touches locking/signaling design in WAL, not just a self-contained function) with real durability-window tradeoffs the user should consciously choose, and only pays off under concurrent write load.
