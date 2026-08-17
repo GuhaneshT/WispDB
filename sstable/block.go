@@ -2,6 +2,8 @@ package sstable
 
 import (
 	"encoding/binary"
+
+	"github.com/golang/snappy"
 )
 
 type Block struct {
@@ -60,4 +62,9 @@ func (b *Block) Encode(scratch *[]byte) []byte {
 	}
 	*scratch = buf
 	return buf
+}
+
+func (b *Block) EncodeWithCompression(scratch *[]byte) []byte {
+	encoded := b.Encode(scratch)
+	return snappy.Encode(nil, encoded)
 }

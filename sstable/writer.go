@@ -2,10 +2,13 @@ package sstable
 
 import (
 	"encoding/binary"
+	"fmt"
 	"hash"
 	"hash/crc32"
 	"io"
 	"os"
+
+	"github.com/golang/snappy"
 )
 
 type Writer struct {
@@ -68,7 +71,7 @@ func (w *Writer) flushBlock() error {
 	if len(w.currentBlock.Entries) == 0 {
 		return nil
 	}
-	data := w.currentBlock.Encode(&w.blockBuf)
+	data := w.currentBlock.EncodeWithCompression(&w.blockBuf)
 	offset := w.offset
 	n, err := w.out.Write(data)
 	if err != nil {

@@ -7,6 +7,8 @@ import (
 	"io"
 	"os"
 	"sort"
+
+	"github.com/golang/snappy"
 )
 
 type Reader struct {
@@ -209,6 +211,11 @@ func (r *Reader) readBlock(indexEntry IndexEntry) ([]Entry, error) {
 	if _, err := r.file.ReadAt(data, int64(indexEntry.Offset)); err != nil {
 		return nil, err
 	}
+	decompressed, err := snappy.Decode(nil, data)
+	if err != nil {
+		return nil, fmt.Errorf("snappy decompress: %w", err)
+	}
+	data = decompressed
 	var entries []Entry
 	for pos := 0; pos < len(data); {
 		if pos+4 > len(data) {
@@ -250,6 +257,11 @@ func (r *Reader) findEntryInBlock(indexEntry IndexEntry, seriesID uint64, timest
 	if _, err := r.file.ReadAt(data, int64(indexEntry.Offset)); err != nil {
 		return nil, false, false, err
 	}
+	decompressed, err := snappy.Decode(nil, data)
+	if err != nil {
+		return nil, false, false, fmt.Errorf("snappy decompress: %w", err)
+	}
+	data = decompressed
 	for pos := 0; pos < len(data); {
 		if pos+4 > len(data) {
 			return nil, false, false, fmt.Errorf("corrupt block entry length")

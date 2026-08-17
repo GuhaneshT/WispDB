@@ -35,7 +35,7 @@
 \- [Prometheus TSDB (Part 1): The Head Block | Ganesh Vernekar](https://ganeshvernekar.com/blog/prometheus-tsdb-the-head-block/)
 \- [prometheus/tsdb/head.go at main · prometheus/prometheus](https://github.com/prometheus/prometheus/blob/main/tsdb/head.go)
 
-## Priority 4: Per-block compression (snappy/zstd)
+## Priority 4: Per-block compression (snappy/zstd) [DONE]
 **The problem:** SSTable blocks are stored raw. For time-series data — which is often highly repetitive (similar deltas, sparse values, repeated series IDs) — that wastes disk space and I/O bandwidth on every read and write.
 
 **The fix:** Compress each block's encoded bytes before writing (block header already carries a blockSize field in the SSTable header, and the format is versioned, so this is an additive change: add a compression-type byte per block or per file, decompress in Reader.readBlock / findEntryInBlock before parsing entries). Snappy is the conventional LSM choice (fast decompress, modest ratio); zstd trades more CPU for a better ratio.
