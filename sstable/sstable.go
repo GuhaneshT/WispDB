@@ -38,3 +38,4 @@ type Footer struct {
 	Checksum    uint32
 
 }
+//everything is snappy compressed by default

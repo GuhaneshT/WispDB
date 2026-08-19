@@ -108,7 +108,7 @@ Write-Host ""
 
 $BenchmarkFile = Join-Path $RunDir "benchmark.txt"
 
-$Output = & go test ./main `
+$Output = & go test . `
     "-bench=$BenchRegex" `
     "-benchmem" `
     "-count=5" `
@@ -134,7 +134,7 @@ if ($BenchmarkLines.Count -eq 0) {
     Write-Host "ERROR: No benchmarks were executed." -ForegroundColor Red
     Write-Host ""
     Write-Host "Command used:"
-    Write-Host "go test ./main -bench=$BenchRegex -benchmem -count=5 -benchtime=3s"
+    Write-Host "go test . -bench=$BenchRegex -benchmem -count=5 -benchtime=3s"
     exit 1
 }
 
@@ -153,7 +153,7 @@ Write-Host ""
 $CPUProfile = Join-Path $RunDir "cpu.prof"
 $CPUOutput = Join-Path $RunDir "cpu.txt"
 
-$Output = & go test ./main `
+$Output = & go test . `
     "-bench=$BenchRegex" `
     "-benchtime=15s" `
     "-cpuprofile=$CPUProfile" `
@@ -182,7 +182,7 @@ Write-Host ""
 $MemProfile = Join-Path $RunDir "memory.prof"
 $MemOutput = Join-Path $RunDir "memory.txt"
 
-$Output = & go test ./main `
+$Output = & go test . `
     "-bench=$BenchRegex" `
     "-benchmem" `
     "-benchtime=15s" `
@@ -213,7 +213,7 @@ $MutexProfile = Join-Path $RunDir "mutex.prof"
 $BlockProfile = Join-Path $RunDir "block.prof"
 $ConcurrencyOutput = Join-Path $RunDir "concurrency.txt"
 
-$Output = & go test ./main `
+$Output = & go test . `
     "-bench=$BenchRegex" `
     "-benchtime=15s" `
     "-mutexprofile=$MutexProfile" `

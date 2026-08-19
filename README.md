@@ -55,50 +55,70 @@ This project exists to build and understand that design firsthand — every laye
 ## Status
 
 **Implemented:**
-- Point lookups (`Get`) and writes (`Insert`/`Delete`) with tombstone support
+- Point lookups (`Get`), writes (`Insert`/`Delete`) with tombstone support, and range queries (`Scan`)
 - Concurrent access with reference-counted SSTable management
 - Snappy compression on blocks
 - Bloom filters per SSTable
 - WAL segmentation and recovery
 - CRC32 validation on SSTables
 
-**In progress:**
-- Range/scan queries (`Scan`) — freeze-on-scan approach, ready for testing
-- See [`next_steps.md`](next_steps.md) for the roadmap and open decisions
+See [`misc/next_steps.md`](misc/next_steps.md) for the roadmap and what's deliberately deferred (TTL, observability, WAL group commit).
 
-## Getting started
+## Install
+
+```powershell
+go get wisp
+```
+
+```go
+import "wisp"
+
+db, err := wisp.CreateWisp()
+db.Insert(seriesID, timestamp, value)
+value, found, deleted, err := db.Get(seriesID, timestamp)
+it, err := db.Scan(seriesID, startTs, endTs)
+```
+
+A complete runnable example lives in [`examples/basic/main.go`](examples/basic/main.go):
+
+```powershell
+go run ./examples/basic
+```
+
+## Getting started (developing WispDB itself)
 
 Go isn't required to read the code, but you'll need it to build or test.
 
 ```powershell
 go test ./...                                          # run all tests
 go test ./sstable/ -run TestWriterReaderRoundTrip -v    # a single test
-go test ./main/ -race -v                                # concurrency tests need -race to mean anything
+go test . -race -v                                      # concurrency tests need -race to mean anything
 go vet ./...                                             # primary build/lint check
+go build ./...                                           # builds cleanly — the engine is an importable library now
 .\scripts\bench-compare.ps1                              # tests + benchmarks, diffed against the last run
 ```
-
-> `go build ./...` fails by design: `main/` is a library package with no `func main()` — it's the engine implementation, not a CLI, and only compiles under `go test`/`go vet`. There's no importable public API yet either, since a package named `main` can't be imported from outside its own module; that's expected at this stage, not a bug.
 
 ## Project layout
 
 ```
-skiplist/    in-memory ordered structure backing the memtable
-memtable/    mutable/immutable write buffer wrapping the skiplist
-wal/         write-ahead log, segmented, fsync per record
-sstable/     on-disk sorted table format: writer, reader, index, bloom filter
-compactor/   k-way merge across SSTable generations
-main/        the Wisp engine — wires the above together, Insert/Delete/Get
-scripts/     benchmark tooling
+skiplist/         in-memory ordered structure backing the memtable
+memtable/         mutable/immutable write buffer wrapping the skiplist
+wal/              write-ahead log, segmented, fsync per record
+sstable/          on-disk sorted table format: writer, reader, index, bloom filter
+compactor/        k-way merge across SSTable generations
+wisp.go (root)    the Wisp engine — wires the above together, Insert/Delete/Get/Scan
+examples/basic/   a runnable demo program (the one real package main in this repo)
+scripts/          benchmark tooling
+misc/             benchmark reports, logs, and the roadmap doc
 ```
 
-Layering is bottom-up: `skiplist` → `memtable` → `wal` + `sstable` → `compactor` → `main`.
+Layering is bottom-up: `skiplist` → `memtable` → `wal` + `sstable` → `compactor` → `wisp` (root package).
 
 ## Documentation
 
 - [`JOURNEY.md`](JOURNEY.md) — the build story: bugs hit, fixes made, what each one taught, with sources.
-- [`next_steps.md`](next_steps.md) — the live, prioritized roadmap.
-- [`BenchmarkAndMemory1.md`](BenchmarkAndMemory1.md) — first full benchmark and allocation profile.
+- [`misc/next_steps.md`](misc/next_steps.md) — the live, prioritized roadmap.
+- [`misc/BenchmarkAndMemory1.md`](misc/BenchmarkAndMemory1.md) — first full benchmark and allocation profile.
 
 ## License
 

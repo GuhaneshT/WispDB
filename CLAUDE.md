@@ -13,20 +13,21 @@ Go is not on `PATH` in this environment — `go` must be located or installed be
 ```powershell
 go test ./...                       # all packages
 go test ./sstable/ -run TestWriterReaderRoundTrip -v   # single test
-go test ./main/ -race -v            # concurrency test needs -race to be meaningful
-go vet ./...                        # main build check (see below)
+go test . -race -v                  # concurrency test needs -race to be meaningful
+go vet ./...                        # main build check
+go build ./...                      # builds cleanly now — see package layout below
 .\scripts\bench-compare.ps1         # run tests + benchmarks, compare to prior baseline
 ```
 
 **Benchmarking:** `bench-compare.ps1` runs the full test suite, collects benchmarks from all packages, and compares ns/op (CPU), B/op (memory), and allocs/op against the previous run. Baseline stored locally at `.claude/benchmarks/baseline.json` (not committed). First run establishes the baseline; subsequent runs show % deltas.
 
-`go build ./...` **fails by design**: `main/` is `package main` but declares no `func main()`. It is a library package that only compiles under `go test` / `go vet`. Don't "fix" this by adding a `main()` unless a CLI is actually being introduced.
+**Package layout:** the engine itself is `package wisp` at the module root (moved out of `main/`, which was `package main` with no `func main()` — undocumented and, worse, unimportable by design). Importing it elsewhere is now just `import "wisp"`. `examples/basic/main.go` is the one real `package main` in the repo, a runnable demo of `Insert`/`Get`/`Delete`/`Scan`; nothing else should ever declare `func main()` unless a CLI is genuinely being introduced.
 
 ## Architecture
 
-Layering, bottom-up: `skiplist` → `memtable` → `wal` + `sstable` → `compactor` → `main` (the `Wisp` engine that wires them together).
+Layering, bottom-up: `skiplist` → `memtable` → `wal` + `sstable` → `compactor` → `wisp` (root package, the `Wisp` engine that wires them together).
 
-**Write path** (`Wisp.Insert` / `Wisp.Delete` in `main/wisp.go`): append to WAL (fsync per record) → write into the mutable memtable. A `Delete` is a tombstone insert, not a removal — it flows through the skiplist, memtable, WAL, and SSTable formats as a `Deleted bool` alongside the value.
+**Write path** (`Wisp.Insert` / `Wisp.Delete` in `wisp.go`): append to WAL (fsync per record) → write into the mutable memtable. A `Delete` is a tombstone insert, not a removal — it flows through the skiplist, memtable, WAL, and SSTable formats as a `Deleted bool` alongside the value.
 
 **Memtable rotation**: when the mutable memtable's estimated size crosses `MemTableFlushThreshold`, it is `Freeze()`d (rejects further writes) and becomes the single immutable memtable; a fresh mutable one replaces it. `flushImmutable` writes the immutable memtable to a brand-new SSTable generation. Note `prepareMutableMemTableLocked` deliberately unlocks and re-locks `w.mu` around a flush — it is called with the lock held and returns with it held.
 
@@ -80,4 +81,4 @@ Any caller of `GetTables()` **must** pair it with `defer sstable.ReleaseTables(t
 
 ## Testing conventions
 
-Tests use `t.TempDir()` with tiny tuning values (`SSTableBlockSize: 128`, `MemTableFlushThreshold: 1024`) to force multi-block, multi-generation behavior on small datasets — keep that pattern when adding tests, otherwise flush and compaction paths never execute. `main/concurrency_test.go` runs writers, readers, and a background compactor concurrently and is the primary guard on the refcounting and locking rules above.
+Tests use `t.TempDir()` with tiny tuning values (`SSTableBlockSize: 128`, `MemTableFlushThreshold: 1024`) to force multi-block, multi-generation behavior on small datasets — keep that pattern when adding tests, otherwise flush and compaction paths never execute. `concurrency_test.go` runs writers, readers, and a background compactor concurrently and is the primary guard on the refcounting and locking rules above.

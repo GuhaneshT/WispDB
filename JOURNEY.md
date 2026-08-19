@@ -1,20 +1,18 @@
 # The WispDB Journey
 
-WispDB is an LSM-tree storage engine for time-series data, written from scratch in Go with no external dependencies. Every key is `(SeriesID, Timestamp)`. Below is what actually went wrong while building it, and how I fixed it — not a changelog, just the bugs and design mistakes worth remembering.
+WispDB is an LSM-tree storage engine for time-series data, written from scratch in Go with no external dependencies. Every key is `(SeriesID, Timestamp)`. Below is what actually went wrong while building it, and what I learnt through it.
 
-Foundation went in first: WAL for durability, a skiplist memtable, an SSTable format to flush into once the memtable filled up. None of that was interesting on its own. Things got interesting once it started getting used the way a real engine gets used — concurrently, with deletes, with many files piling up.
 
 ---
 
-## Deletes that didn't actually delete
+## Deletes in LSM trees
 
 You can't remove a key from an LSM tree — SSTables are immutable once written. So `Delete` writes a tombstone instead, and that tombstone flows through the memtable, WAL, and SSTable exactly like a normal write. Fine so far.
 
 The bug was on the read side. `Get` would find the tombstone in one SSTable, then keep going and check older SSTables anyway — and if an older one still had the value, it came back as if it were never deleted. A tombstone has to stop the search the moment it's found. It doesn't matter what's sitting underneath it in an older generation; that data is dead and `Get` isn't allowed to look.
 
-This is the kind of bug that doesn't crash anything. It just quietly gives you back data you deleted.
 
-## Two "gone" states that weren't the same thing
+## Two "gone" states 
 
 An SSTable file can stop being live in two different ways: the DB shuts down cleanly and the file just sits on disk to be reopened later, or the file gets compacted away and should eventually be deleted. Early on these were treated as the same state, and it caused exactly the problems you'd expect — files that should've been removed stuck around, and in one case a file got removed while something still had it open for reading.
 
@@ -48,7 +46,7 @@ Before bloom filters, a miss meant checking every SSTable — binary search plus
 
 `readBlock` was decoding *every* entry in a block — with a fresh value copy for each one — just to answer a lookup for a single key. A block with 32 entries meant 32 allocations to find one match. Added `findEntryInBlock`, which walks the raw bytes and stops as soon as it matches, so a hit costs one copy and a miss costs none. Kept `readBlock` around too, since compaction genuinely needs every entry in a block — no reason to make the common case (one lookup) pay for the rare case (full scan).
 
-## Three iterators that quietly disagreed with each other
+## Three iterators
 
 The skiplist, memtable, and SSTable each had their own iterator, and they'd grown independently without ever needing to agree on anything — until I started building a range/scan query that needs to merge across all three. That's when the cracks showed: the skiplist iterator bundled key and value but handled `Deleted` separately, and the SSTable iterator had a straight-up copy-paste bug where `Key()` returned an entire `Entry` instead of just the key.
 
@@ -64,7 +62,6 @@ The mutable memtable is the actual problem — it has no locking of its own and 
 
 ## Patterns that kept showing up
 
-- Deletes are writes. The write half is easy; forgetting to make the read half respect it is where it actually breaks.
 - Never throw away the old copy until the new one is proven safe — same idea behind WAL truncation ordering and refcounted file deletion, two unrelated bugs with the same root cause.
 - Profile before optimizing. The one clear allocation win in this project came from a number the profiler produced, not a guess.
 - It's fine for two callers to use two different code paths when their needs are actually different — don't force the common case to pay for the rare one.
